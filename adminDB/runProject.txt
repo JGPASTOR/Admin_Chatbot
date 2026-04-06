@@ -1,0 +1,29 @@
+npx next dev -p 8000
+ngrok http 8000 
+
+link data: http://devapi.surigaocity.gov.ph/api/web_app/public/document_viewer_qrcode/?t1.id=1002
+
+
+
+
+
+to seed data in mysql: curl.exe -s http://127.0.0.1:8000/api/seed
+curl.exe -s -X POST -H "Content-Type: application/json" -d @document1011.json http://127.0.0.1:8000/api/seed
+cmd.exe /c "curl.exe -s -X POST -H ""Content-Type: application/json"" -d @document1011.json http://127.0.0.1:8000/api/seed"
+
+Updating /api/seed to load and seed all 5 document JSON files into MySQL
+Executing the /api/seed endpoint to parse and insert the documents
+Retrying the seed endpoint on port 8000
+Attempting to trigger the seed API via curl
+Running a Node.js fetch script to hit the seed API
+Writing an offline Node.js script to insert documents directly to MySQL
+Executing the offline Node.js seed script to perform the inserts
+Verifying the offline sync and cleaning up the script
+
+
+commit and push my changes in GitHub:
+
+git status
+git add .
+git commit -m 'comment here'
+git push

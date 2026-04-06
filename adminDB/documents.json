@@ -1,0 +1,816 @@
+{
+  "success": true,
+  "message": "Data Successfully fetched.",
+  "data": {
+    "id": 1000,
+    "sk": null,
+    "dsk": null,
+    "pdid": 1000,
+    "slug": "1024202413940341988-purchase-request",
+    "files": null,
+    "title": "PURCHASE REQUEST",
+    "agency": "City Government of Surigao",
+    "office": "City Health Office",
+    "pdidv2": null,
+    "details": {
+      "routes": [
+        {
+          "age": "00 Mon/s, 00 Day/s, 01 hour/s, 52 min., & 44 sec. ",
+          "office": "1. City Health Office",
+          "date_out": "Oct 24, 2024 11:37:08 AM",
+          "received_at": "Oct 24, 2024 09:44:23 AM",
+          "staff_operation": {
+            "employee": [
+              {
+                "no.": 1,
+                "tat": "00 Mon/s, 00 Day/s, 00 hour/s, 00 min., & 14 sec. ",
+                "remarks": null,
+                "date_out": "Oct 24, 2024 @ 09:44:38 AM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "00:00:00",
+                      "ended": "Oct 24, 2024 09:44:23 AM",
+                      "action": "Register document into the Document Tracking System (DTS).",
+                      "remarks": "Initial process of document after registration to DTS.",
+                      "started": "Oct 24, 2024 09:44:23 AM",
+                      "isreturn": false
+                    }
+                  ]
+                },
+                "received_at": "Oct 24, 2024 09:44:23 AM",
+                "received_by": "Tinio, Bryant",
+                "current_operation": "Register document into the Document Tracking System (DTS).",
+                "received_by_photopath": ""
+              },
+              {
+                "no.": 2,
+                "tat": "00 Mon/s, 00 Day/s, 01 hour/s, 52 min., & 29 sec. ",
+                "remarks": null,
+                "date_out": "Oct 24, 2024 @ 11:37:08 AM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "01:52:29.969313",
+                      "ended": "Oct 24, 2024 11:37:08 AM",
+                      "action": "Bringing out the document.",
+                      "remarks": null,
+                      "started": "Oct 24, 2024 09:44:38 AM",
+                      "isreturn": null
+                    }
+                  ]
+                },
+                "received_at": "Oct 24, 2024 09:44:38 AM",
+                "received_by": "Kong, Florcita",
+                "current_operation": "Bringing out the document.",
+                "received_by_photopath": ""
+              }
+            ]
+          }
+        },
+        {
+          "age": "00 Mon/s, 00 Day/s, 00 hour/s, 31 min., & 35 sec. ",
+          "office": "2. City Social Welfare and Development Office",
+          "date_out": "Oct 24, 2024 12:08:44 PM",
+          "received_at": "Oct 24, 2024 11:37:08 AM",
+          "staff_operation": {
+            "employee": [
+              {
+                "no.": 1,
+                "tat": "00 Mon/s, 00 Day/s, 00 hour/s, 31 min., & 35 sec. ",
+                "remarks": null,
+                "date_out": "Oct 24, 2024 @ 12:08:44 PM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "00:00:06.571786",
+                      "ended": "Oct 24, 2024 12:04:50 PM",
+                      "action": "Wrong Receive",
+                      "remarks": null,
+                      "started": "Oct 24, 2024 12:04:43 PM",
+                      "isreturn": false
+                    },
+                    {
+                      "no.": 2,
+                      "tat": "00:03:49.584603",
+                      "ended": "Oct 24, 2024 12:08:44 PM",
+                      "action": "Bringing out the document.",
+                      "remarks": null,
+                      "started": "Oct 24, 2024 12:04:54 PM",
+                      "isreturn": null
+                    }
+                  ]
+                },
+                "received_at": "Oct 24, 2024 11:37:08 AM",
+                "received_by": "Plandano, Amie",
+                "current_operation": "Bringing out the document.",
+                "received_by_photopath": "protected/profile/438/media/profile_photo/PROFILE_20241020-033644883143_xfNNAb.jpg"
+              }
+            ]
+          }
+        },
+        {
+          "age": "00 Mon/s, 00 Day/s, 01 hour/s, 37 min., & 42 sec. ",
+          "office": "3. City Health Office",
+          "date_out": "Oct 24, 2024 01:46:27 PM",
+          "received_at": "Oct 24, 2024 12:08:44 PM",
+          "staff_operation": {
+            "employee": [
+              {
+                "no.": 1,
+                "tat": "00 Mon/s, 00 Day/s, 00 hour/s, 01 min., & 06 sec. ",
+                "remarks": null,
+                "date_out": "Oct 24, 2024 @ 12:09:50 PM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "00:00:10.100263",
+                      "ended": "Oct 24, 2024 12:09:19 PM",
+                      "action": "Validate",
+                      "remarks": null,
+                      "started": "Oct 24, 2024 12:09:09 PM",
+                      "isreturn": false
+                    }
+                  ]
+                },
+                "received_at": "Oct 24, 2024 12:08:44 PM",
+                "received_by": "Tinio, Bryant",
+                "current_operation": "Validate",
+                "received_by_photopath": ""
+              },
+              {
+                "no.": 2,
+                "tat": "00 Mon/s, 00 Day/s, 01 hour/s, 30 min., & 35 sec. ",
+                "remarks": null,
+                "date_out": "Oct 24, 2024 @ 01:40:26 PM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "01:30:35.728502",
+                      "ended": "Oct 24, 2024 01:40:26 PM",
+                      "action": "Bringing out the document.",
+                      "remarks": null,
+                      "started": "Oct 24, 2024 12:09:50 PM",
+                      "isreturn": null
+                    }
+                  ]
+                },
+                "received_at": "Oct 24, 2024 12:09:50 PM",
+                "received_by": "Kong, Florcita",
+                "current_operation": "Bringing out the document.",
+                "received_by_photopath": ""
+              },
+              {
+                "no.": 3,
+                "tat": "00 Mon/s, 00 Day/s, 00 hour/s, 06 min., & 00 sec. ",
+                "remarks": null,
+                "date_out": "Oct 24, 2024 @ 01:46:27 PM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "00:00:07.592243",
+                      "ended": "Oct 24, 2024 01:41:09 PM",
+                      "action": "Validate",
+                      "remarks": null,
+                      "started": "Oct 24, 2024 01:41:02 PM",
+                      "isreturn": false
+                    },
+                    {
+                      "no.": 2,
+                      "tat": "00:05:10.155718",
+                      "ended": "Oct 24, 2024 01:46:27 PM",
+                      "action": "Bringing out the document.",
+                      "remarks": null,
+                      "started": "Oct 24, 2024 01:41:17 PM",
+                      "isreturn": null
+                    }
+                  ]
+                },
+                "received_at": "Oct 24, 2024 01:40:26 PM",
+                "received_by": "Kong, Florcita",
+                "current_operation": "Bringing out the document.",
+                "received_by_photopath": ""
+              }
+            ]
+          }
+        },
+        {
+          "age": "00 Mon/s, 00 Day/s, 20 hour/s, 54 min., & 44 sec. ",
+          "office": "4. City Mayor's Office",
+          "date_out": "Oct 25, 2024 10:41:12 AM",
+          "received_at": "Oct 24, 2024 01:46:27 PM",
+          "staff_operation": {
+            "employee": [
+              {
+                "no.": 1,
+                "tat": "00 Mon/s, 00 Day/s, 20 hour/s, 54 min., & 44 sec. ",
+                "remarks": null,
+                "date_out": "Oct 25, 2024 @ 10:41:12 AM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "00:06:24.982961",
+                      "ended": "Oct 24, 2024 02:01:23 PM",
+                      "action": "Purchase Request",
+                      "remarks": null,
+                      "started": "Oct 24, 2024 01:54:58 PM",
+                      "isreturn": false
+                    }
+                  ]
+                },
+                "received_at": "Oct 24, 2024 01:46:27 PM",
+                "received_by": "Ranario, Michille",
+                "current_operation": "Purchase Request",
+                "received_by_photopath": "protected/profile/295/media/profile_photo/PROFILE_20240926-070854136644_ihkHui.jpg"
+              }
+            ]
+          }
+        },
+        {
+          "age": "00 Mon/s, 20 Day/s, 01 hour/s, 08 min., & 35 sec. ",
+          "office": "5. City Health Office",
+          "date_out": "Nov 14, 2024 11:49:47 AM",
+          "received_at": "Oct 25, 2024 10:41:12 AM",
+          "staff_operation": {
+            "employee": [
+              {
+                "no.": 1,
+                "tat": "00 Mon/s, 19 Day/s, 22 hour/s, 07 min., & 37 sec. ",
+                "remarks": null,
+                "date_out": "Nov 14, 2024 @ 08:48:49 AM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "00:00:00",
+                      "ended": "Oct 25, 2024 10:41:12 AM",
+                      "action": "Bringing out the document.",
+                      "remarks": "Pick-up",
+                      "started": "Oct 25, 2024 10:41:12 AM",
+                      "isreturn": false
+                    }
+                  ]
+                },
+                "received_at": "Oct 25, 2024 10:41:12 AM",
+                "received_by": "Kong, Florcita",
+                "current_operation": "Bringing out the document.",
+                "received_by_photopath": ""
+              },
+              {
+                "no.": 2,
+                "tat": "00 Mon/s, 00 Day/s, 00 hour/s, 00 min., & 57 sec. ",
+                "remarks": null,
+                "date_out": "Nov 14, 2024 @ 08:49:47 AM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "00:00:09.473003",
+                      "ended": "Nov 14, 2024 08:49:13 AM",
+                      "action": "Received",
+                      "remarks": null,
+                      "started": "Nov 14, 2024 08:49:04 AM",
+                      "isreturn": false
+                    }
+                  ]
+                },
+                "received_at": "Nov 14, 2024 08:48:49 AM",
+                "received_by": "Tinio, Bryant",
+                "current_operation": "Received",
+                "received_by_photopath": ""
+              },
+              {
+                "no.": 3,
+                "tat": "00 Mon/s, 00 Day/s, 02 hour/s, 59 min., & 59 sec. ",
+                "remarks": null,
+                "date_out": "Nov 14, 2024 @ 11:49:47 AM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "02:59:59.883977",
+                      "ended": "Nov 14, 2024 11:49:47 AM",
+                      "action": "Bringing out the document.",
+                      "remarks": null,
+                      "started": "Nov 14, 2024 08:49:47 AM",
+                      "isreturn": null
+                    }
+                  ]
+                },
+                "received_at": "Nov 14, 2024 08:49:47 AM",
+                "received_by": "Kong, Florcita",
+                "current_operation": "Bringing out the document.",
+                "received_by_photopath": ""
+              }
+            ]
+          }
+        },
+        {
+          "age": "00 Mon/s, 00 Day/s, 21 hour/s, 01 min., & 46 sec. ",
+          "office": "6. City Budget Office",
+          "date_out": "Nov 15, 2024 08:51:33 AM",
+          "received_at": "Nov 14, 2024 11:49:47 AM",
+          "staff_operation": {
+            "employee": [
+              {
+                "no.": 1,
+                "tat": "00 Mon/s, 00 Day/s, 21 hour/s, 01 min., & 46 sec. ",
+                "remarks": null,
+                "date_out": "Nov 15, 2024 @ 08:51:33 AM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "00:01:34.470132",
+                      "ended": "Nov 14, 2024 11:51:36 AM",
+                      "action": "Receiving Only",
+                      "remarks": null,
+                      "started": "Nov 14, 2024 11:50:01 AM",
+                      "isreturn": false
+                    },
+                    {
+                      "no.": 2,
+                      "tat": "18:54:14.685523",
+                      "ended": "Nov 15, 2024 08:51:33 AM",
+                      "action": "Bringing out the document.",
+                      "remarks": null,
+                      "started": "Nov 14, 2024 01:57:19 PM",
+                      "isreturn": null
+                    }
+                  ]
+                },
+                "received_at": "Nov 14, 2024 11:49:47 AM",
+                "received_by": "Fabio, Roberto",
+                "current_operation": "Bringing out the document.",
+                "received_by_photopath": "protected/profile/287/media/profile_photo/PROFILE_20241004-021823459466_k9Q5nt.jpg"
+              }
+            ]
+          }
+        },
+        {
+          "age": "00 Mon/s, 00 Day/s, 00 hour/s, 01 min., & 02 sec. ",
+          "office": "7. City Administrator's Office",
+          "date_out": "Nov 15, 2024 08:52:36 AM",
+          "received_at": "Nov 15, 2024 08:51:33 AM",
+          "staff_operation": {
+            "employee": [
+              {
+                "no.": 1,
+                "tat": "00 Mon/s, 00 Day/s, 00 hour/s, 01 min., & 02 sec. ",
+                "remarks": null,
+                "date_out": "Nov 15, 2024 @ 08:52:36 AM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "00:00:06.586056",
+                      "ended": "Nov 15, 2024 08:51:58 AM",
+                      "action": "For Signature",
+                      "remarks": null,
+                      "started": "Nov 15, 2024 08:51:51 AM",
+                      "isreturn": false
+                    }
+                  ]
+                },
+                "received_at": "Nov 15, 2024 08:51:33 AM",
+                "received_by": "Temon, Diana Rose",
+                "current_operation": "For Signature",
+                "received_by_photopath": ""
+              }
+            ]
+          }
+        },
+        {
+          "age": "00 Mon/s, 00 Day/s, 01 hour/s, 39 min., & 52 sec. ",
+          "office": "8. City Health Office",
+          "date_out": "Nov 15, 2024 10:32:29 AM",
+          "received_at": "Nov 15, 2024 08:52:36 AM",
+          "staff_operation": {
+            "employee": [
+              {
+                "no.": 1,
+                "tat": "00 Mon/s, 00 Day/s, 01 hour/s, 39 min., & 52 sec. ",
+                "remarks": null,
+                "date_out": "Nov 15, 2024 @ 10:32:29 AM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "01:39:52.735353",
+                      "ended": "Nov 15, 2024 10:32:29 AM",
+                      "action": "Pick-up & bringing out the document.",
+                      "remarks": null,
+                      "started": "Nov 15, 2024 08:52:36 AM",
+                      "isreturn": null
+                    }
+                  ]
+                },
+                "received_at": "Nov 15, 2024 08:52:36 AM",
+                "received_by": "Kong, Florcita",
+                "current_operation": "Pick-up & bringing out the document.",
+                "received_by_photopath": ""
+              }
+            ]
+          }
+        },
+        {
+          "age": "00 Mon/s, 00 Day/s, 03 hour/s, 46 min., & 10 sec. ",
+          "office": "9. Bids and Awards Committee(City Mayor's Office)",
+          "date_out": "Nov 15, 2024 02:18:40 PM",
+          "received_at": "Nov 15, 2024 10:32:29 AM",
+          "staff_operation": {
+            "employee": [
+              {
+                "no.": 1,
+                "tat": "00 Mon/s, 00 Day/s, 00 hour/s, 00 min., & 27 sec. ",
+                "remarks": null,
+                "date_out": "Nov 15, 2024 @ 10:32:56 AM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "00:00:06.068466",
+                      "ended": "Nov 15, 2024 10:32:41 AM",
+                      "action": "For Rfq",
+                      "remarks": null,
+                      "started": "Nov 15, 2024 10:32:35 AM",
+                      "isreturn": false
+                    }
+                  ]
+                },
+                "received_at": "Nov 15, 2024 10:32:29 AM",
+                "received_by": "Azarcon, Rowena",
+                "current_operation": "For Rfq",
+                "received_by_photopath": "protected/profile/396/media/profile_photo/PROFILE_20241004-023351278650_ZGOu95.png"
+              },
+              {
+                "no.": 2,
+                "tat": "00 Mon/s, 00 Day/s, 03 hour/s, 45 min., & 43 sec. ",
+                "remarks": null,
+                "date_out": "Nov 15, 2024 @ 02:18:40 PM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "03:45:43.682139",
+                      "ended": "Nov 15, 2024 02:18:40 PM",
+                      "action": "Bringing out the document.",
+                      "remarks": null,
+                      "started": "Nov 15, 2024 10:32:56 AM",
+                      "isreturn": null
+                    }
+                  ]
+                },
+                "received_at": "Nov 15, 2024 10:32:56 AM",
+                "received_by": "Pertos, Rhoxanne Jay",
+                "current_operation": "Bringing out the document.",
+                "received_by_photopath": "protected/profile/398/media/profile_photo/PROFILE_20241004-023420941308_nbndvM.jpg"
+              }
+            ]
+          }
+        },
+        {
+          "age": "00 Mon/s, 19 Day/s, 01 hour/s, 47 min., & 35 sec. ",
+          "office": "10. City Budget Office",
+          "date_out": "Dec 04, 2024 04:06:15 PM",
+          "received_at": "Nov 15, 2024 02:18:40 PM",
+          "staff_operation": {
+            "employee": [
+              {
+                "no.": 1,
+                "tat": "00 Mon/s, 19 Day/s, 01 hour/s, 47 min., & 35 sec. ",
+                "remarks": null,
+                "date_out": "Dec 04, 2024 @ 04:06:15 PM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "00:00:04.572368",
+                      "ended": "Nov 15, 2024 02:19:01 PM",
+                      "action": "Rfq Signed",
+                      "remarks": null,
+                      "started": "Nov 15, 2024 02:18:56 PM",
+                      "isreturn": false
+                    },
+                    {
+                      "no.": 2,
+                      "tat": "19 days 01:47:10.361142",
+                      "ended": "Dec 04, 2024 04:06:15 PM",
+                      "action": "Bringing out the document.",
+                      "remarks": null,
+                      "started": "Nov 15, 2024 02:19:05 PM",
+                      "isreturn": null
+                    }
+                  ]
+                },
+                "received_at": "Nov 15, 2024 02:18:40 PM",
+                "received_by": "Penera, Mary Mae",
+                "current_operation": "Bringing out the document.",
+                "received_by_photopath": "protected/profile/328/media/profile_photo/PROFILE_20241004-021823459466_CofgHd.jpg"
+              }
+            ]
+          }
+        },
+        {
+          "age": "00 Mon/s, 04 Day/s, 17 hour/s, 03 min., & 16 sec. ",
+          "office": "11. Bids and Awards Committee(City Mayor's Office)",
+          "date_out": "Dec 09, 2024 09:09:31 AM",
+          "received_at": "Dec 04, 2024 04:06:15 PM",
+          "staff_operation": {
+            "employee": [
+              {
+                "no.": 1,
+                "tat": "00 Mon/s, 00 Day/s, 00 hour/s, 02 min., & 48 sec. ",
+                "remarks": null,
+                "date_out": "Dec 04, 2024 @ 04:09:03 PM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "00:00:16.967207",
+                      "ended": "Dec 04, 2024 04:07:10 PM",
+                      "action": "For Abstract Of Quotation",
+                      "remarks": null,
+                      "started": "Dec 04, 2024 04:06:53 PM",
+                      "isreturn": false
+                    }
+                  ]
+                },
+                "received_at": "Dec 04, 2024 04:06:15 PM",
+                "received_by": "Rosales, Erick",
+                "current_operation": "For Abstract Of Quotation",
+                "received_by_photopath": ""
+              },
+              {
+                "no.": 2,
+                "tat": "00 Mon/s, 04 Day/s, 16 hour/s, 59 min., & 08 sec. ",
+                "remarks": null,
+                "date_out": "Dec 09, 2024 @ 09:08:12 AM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "00:00:17.806966",
+                      "ended": "Dec 04, 2024 04:09:39 PM",
+                      "action": "Abstract For Checking",
+                      "remarks": null,
+                      "started": "Dec 04, 2024 04:09:21 PM",
+                      "isreturn": false
+                    },
+                    {
+                      "no.": 2,
+                      "tat": "4 days 16:54:17.744781",
+                      "ended": "Dec 09, 2024 09:08:12 AM",
+                      "action": "Bringing out the document.",
+                      "remarks": null,
+                      "started": "Dec 04, 2024 04:13:54 PM",
+                      "isreturn": null
+                    }
+                  ]
+                },
+                "received_at": "Dec 04, 2024 04:09:03 PM",
+                "received_by": "Pertos, Rhoxanne Jay",
+                "current_operation": "Bringing out the document.",
+                "received_by_photopath": "protected/profile/398/media/profile_photo/PROFILE_20241004-023420941308_nbndvM.jpg"
+              },
+              {
+                "no.": 3,
+                "tat": "00 Mon/s, 00 Day/s, 00 hour/s, 01 min., & 19 sec. ",
+                "remarks": null,
+                "date_out": "Dec 09, 2024 @ 09:09:31 AM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "00:00:07.784233",
+                      "ended": "Dec 09, 2024 09:08:28 AM",
+                      "action": "Abstract Release",
+                      "remarks": null,
+                      "started": "Dec 09, 2024 09:08:20 AM",
+                      "isreturn": false
+                    }
+                  ]
+                },
+                "received_at": "Dec 09, 2024 09:08:12 AM",
+                "received_by": "Oraba, Angel",
+                "current_operation": "Abstract Release",
+                "received_by_photopath": ""
+              }
+            ]
+          }
+        },
+        {
+          "age": "00 Mon/s, 01 Day/s, 04 hour/s, 37 min., & 04 sec. ",
+          "office": "12. City Health Office",
+          "date_out": "Dec 10, 2024 01:46:36 PM",
+          "received_at": "Dec 09, 2024 09:09:31 AM",
+          "staff_operation": {
+            "employee": [
+              {
+                "no.": 1,
+                "tat": "00 Mon/s, 01 Day/s, 04 hour/s, 37 min., & 04 sec. ",
+                "remarks": null,
+                "date_out": "Dec 10, 2024 @ 01:46:36 PM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "1 day 04:37:04.952085",
+                      "ended": "Dec 10, 2024 01:46:36 PM",
+                      "action": "Pick-up & bringing out the document.",
+                      "remarks": null,
+                      "started": "Dec 09, 2024 09:09:31 AM",
+                      "isreturn": null
+                    }
+                  ]
+                },
+                "received_at": "Dec 09, 2024 09:09:31 AM",
+                "received_by": "Kong, Florcita",
+                "current_operation": "Pick-up & bringing out the document.",
+                "received_by_photopath": ""
+              }
+            ]
+          }
+        },
+        {
+          "age": "00 Mon/s, 00 Day/s, 21 hour/s, 03 min., & 20 sec. ",
+          "office": "13. Office of the City Engineer(City Engineering Office)",
+          "date_out": "Dec 11, 2024 10:49:56 AM",
+          "received_at": "Dec 10, 2024 01:46:36 PM",
+          "staff_operation": {
+            "employee": [
+              {
+                "no.": 1,
+                "tat": "00 Mon/s, 00 Day/s, 21 hour/s, 03 min., & 20 sec. ",
+                "remarks": null,
+                "date_out": "Dec 11, 2024 @ 10:49:56 AM",
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "00:00:17.695587",
+                      "ended": "Dec 10, 2024 02:15:33 PM",
+                      "action": "For Signature",
+                      "remarks": null,
+                      "started": "Dec 10, 2024 02:15:15 PM",
+                      "isreturn": false
+                    },
+                    {
+                      "no.": 2,
+                      "tat": "20:34:10.469336",
+                      "ended": "Dec 11, 2024 10:49:56 AM",
+                      "action": "Bringing out the document.",
+                      "remarks": null,
+                      "started": "Dec 10, 2024 02:15:46 PM",
+                      "isreturn": null
+                    }
+                  ]
+                },
+                "received_at": "Dec 10, 2024 01:46:36 PM",
+                "received_by": "Corminal, Theola",
+                "current_operation": "Bringing out the document.",
+                "received_by_photopath": "protected/profile/320/media/profile_photo/PROFILE_20250117-090043814288_jSNtwO.jpg"
+              }
+            ]
+          }
+        },
+        {
+          "age": "02 Mon/s, 13 Day/s, 23 hour/s, 46 min., & 40 sec. ",
+          "office": "14. City Budget Office",
+          "date_out": null,
+          "received_at": "Dec 11, 2024 10:49:56 AM",
+          "staff_operation": {
+            "employee": [
+              {
+                "no.": 1,
+                "tat": "02 Mon/s, 13 Day/s, 23 hour/s, 46 min., & 40 sec. ",
+                "remarks": null,
+                "date_out": null,
+                "isreturn": null,
+                "processing": {
+                  "process": [
+                    {
+                      "no.": 1,
+                      "tat": "05:06:23.052183",
+                      "ended": "Dec 11, 2024 03:56:28 PM",
+                      "action": "Abstract For Signature",
+                      "remarks": null,
+                      "started": "Dec 11, 2024 10:50:05 AM",
+                      "isreturn": false
+                    },
+                    {
+                      "no.": 2,
+                      "tat": "1 year 2 mons 13 days 18:40:04.109812",
+                      "ended": null,
+                      "action": "Bringing out the document.",
+                      "remarks": null,
+                      "started": "Dec 11, 2024 03:56:33 PM",
+                      "isreturn": null
+                    }
+                  ]
+                },
+                "received_at": "Dec 11, 2024 10:49:56 AM",
+                "received_by": "Bangcoyo, Jindel Feb",
+                "current_operation": "Bringing out the document.",
+                "received_by_photopath": "protected/profile/279/media/profile_photo/PROFILE_20250124-085247095346_7N1TUx.png"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "subject": "For orientation of new BSI's, update on FHSIS and dengue orientation meeting\n\n1 set EOS 4000D DSLR Camera (wifi) Original\n3 sets Original Calculator mx-12 B 12 digits\n\namount: 49,500.00",
+    "file_type": "n/a",
+    "is_public": true,
+    "created_at": "10/24/2024",
+    "created_by": "Tinio,Bryant",
+    "validated_at": "10/24/2024 | 09:44:09 AM",
+    "validated_by": "Tinio,Bryant",
+    "document_type": null,
+    "user_retention": "02 Mon/s, 13 Day/s, 23 hour/s, 46 min., & 40 sec. ",
+    "document_routes": [
+      {
+        "doc_route_to": {
+          "id": null,
+          "category": null,
+          "to_agency": "City Government of Surigao",
+          "document_id": null,
+          "received_at": null,
+          "parent_route": null
+        },
+        "doc_route_from": {
+          "id": 45234,
+          "imageid": "imageB4D3D",
+          "process": [
+            {
+              "id": 57557,
+              "ended": null,
+              "action": "Bringing out the document.",
+              "remarks": null,
+              "started": "12/11/2024 | 03:56:33 PM",
+              "isreturn": false,
+              "attachment": null
+            },
+            {
+              "id": 56866,
+              "ended": "12/11/2024 | 03:56:28 PM",
+              "action": "Abstract For Signature",
+              "remarks": null,
+              "started": "12/11/2024 | 10:50:05 AM",
+              "isreturn": false,
+              "attachment": null
+            }
+          ],
+          "child_id": 5,
+          "document_id": null,
+          "from_agency": "City Government of Surigao",
+          "received_at": "12/11/2024 | 10:49:56 AM",
+          "parent_route": 44380,
+          "submitted_at": null,
+          "submitted_by": "Bangcoyo,Jindel Feb",
+          "from_agency_abbr": "CGO-SXU",
+          "from_office_name": "City Budget Office",
+          "from_station_name": "City Budget Office",
+          "from_station_acronym": "CBO",
+          "received_by_photo_path": "protected/profile/279/media/profile_photo/PROFILE_20250124-085247095346_7N1TUx.png"
+        }
+      }
+    ],
+    "alternate_mobile": null,
+    "office_retention": "02 Mon/s, 13 Day/s, 23 hour/s, 46 min., & 40 sec. ",
+    "attached_document": null,
+    "enable_notification": true,
+    "process_completed_by": null,
+    "overall_days_onprocess": "04 Mon/s, 01 Day/s, 00 hour/s, 52 min., & 13 sec. ",
+    "process_completed_date": " | ",
+    "document_completed_status": false
+  }
+}

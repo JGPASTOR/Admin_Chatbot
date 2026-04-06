@@ -1,0 +1,1201 @@
+DTS AI ENGINE — SYSTEM DOCUMENTATION
+======================================
+Document Tracking System AI-Powered Conversational Assistant
+Version: 1.1.0 | Last Updated: March 2026
+
+This document provides a complete, exhaustive technical explanation of how the DTS AI Engine was
+designed, built, and how every feature works internally. It is intended to serve as a definitive
+reference for understanding the system from the ground up.
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+1.  Project Overview
+2.  Technology Stack
+3.  System Architecture
+4.  Application Entry Point (main.py)
+5.  Configuration System (config.py)
+6.  Machine Learning Pipeline
+    6a. Text Preprocessing (preprocessing.py)
+    6b. Intent Classifier (intent_classifier.py)
+    6c. Entity Extractor (entity_extractor.py)
+7.  The Conversation Engine (conversation.py)
+8.  Document Retrieval Services
+    8a. DTS API Client (dts_client.py)
+    8b. RAG Service (rag_service.py)
+9.  Response Generation Layer
+    9a. Template Generator (response_generator.py)
+    9b. LLM Client (llm_client.py)
+10. Database Layer
+    10a. ORM Models (models.py)
+    10b. Database Connection (database.py)
+    10c. Chat Logger (chat_logger.py)
+11. API Layer
+    11a. Pydantic Schemas (chat.py)
+    11b. REST Endpoints (routes.py)
+12. Rate Limiter (rate_limiter.py)
+13. Text-to-Speech (TTS) Feature
+14. Multi-Language Support (Translation & TTS)
+15. Web Chat Interface (web-app/)
+16. Security Features
+17. Data Flow — Full Request Lifecycle
+18. How Mock Mode Works
+19. How Live Mode Works
+20. Model Training — How It Works
+21. Multi-Turn Conversation — How Context Is Maintained
+22. Environment Variables & Configuration
+23. Production Deployment Considerations
+24. Project Directory Structure
+
+================================================================================
+1. PROJECT OVERVIEW
+================================================================================
+
+The DTS AI Engine is a Python-based REST API that lets users interact with the Document Tracking
+System (DTS) using natural language. Instead of navigating a web portal to look up a document
+status, a user can simply type "Where is PDID 001?" and the AI engine will:
+
+  1. Understand the intent of the message (looking for document status, or general LGU inquiry)
+  2. Extract the document identifier (PDID 001) or keywords
+  3. Query the DTS backend API for the document's current status, or query the RAG index
+  4. Return a clean, human-readable formatted response or stream conversational text from the LLM
+  5. Optionally speak the response aloud in English or Filipino using Text-to-Speech
+  6. Remember context across multiple messages in the same conversation session
+
+The system was designed with these major goals:
+  - Natural language understanding using a real ML classification model
+  - Full integration with the DTS government tracking system
+  - Multi-turn conversational memory (sessions)
+  - Bilingual support (English and Filipino / Tagalog)
+  - Text-to-Speech (TTS) audio output
+  - A browser-based web chat UI for easy testing and demonstration
+  - Rate limiting to protect all API endpoints from abuse
+  - Retrainable ML model — no code changes needed to add new intents
+  - Strict topic-based intent routing (Docs vs LGU queries)
+  - Retrieval-Augmented Generation (RAG) for local government knowledge
+  - LLM Service integration for conversational generation and Server-Sent Events (SSE) streaming
+
+
+================================================================================
+2. TECHNOLOGY STACK
+================================================================================
+
+BACKEND
+  - Language:         Python 3.10+
+  - Web Framework:    FastAPI (async, high-performance REST API)
+  - ASGI Server:      Uvicorn (serves the FastAPI app)
+  - ORM:              SQLAlchemy (database models and queries)
+  - Database:         MySQL (via PyMySQL driver)
+  - ML Library:       scikit-learn (TF-IDF vectorizer, SGDClassifier, cosine similarity)
+  - Vector Search:    sentence-transformers (all-MiniLM-L6-v2 embeddings) + numpy
+  - Model Storage:    joblib (serialize/deserialize trained ML models)
+  - HTTP Client:      httpx (async HTTP calls to DTS API and external LLM Service)
+  - TTS Engine:       edge-tts (Microsoft Edge Neural TTS voices)
+  - Translation:      deep-translator (Google Translate API wrapper)
+  - Language Detect:  langdetect (automatically identifies Filipino/Tagalog)
+  - Rate Limiting:    slowapi (per-IP request rate limiting)
+  - Caching:          cachetools (in-memory TTLCache for DTS API responses)
+  - Config:           pydantic-settings (loads .env into typed settings object)
+  - Validation:       pydantic v2 (request/response data validation)
+
+FRONTEND (web-app/)
+  - Language:         HTML5, JavaScript (ES Modules)
+  - Bundler:          Vite 7 (development server with HMR and API proxy)
+  - Fonts:            Google Fonts — Inter (300, 400, 500, 600)
+  - Styling:          Vanilla CSS (custom dark theme, glassmorphism, animations)
+  - API Client:       native fetch() API
+
+
+================================================================================
+3. SYSTEM ARCHITECTURE
+================================================================================
+
+The system is organized in clear, separated layers:
+
+  ┌─────────────────────────────────────────────┐
+  │            Web Chat Interface               │
+  │         (web-app/ — Vite + JS)              │
+  └─────────────────┬───────────────────────────┘
+                    │  HTTP (proxied via Vite dev server)
+  ┌─────────────────▼───────────────────────────┐
+  │              API Layer                      │
+  │    FastAPI + routes.py + rate limiter       │
+  └──────┬──────────────────┬───────────────────┘
+         │                  │
+  ┌──────▼──────┐     ┌──────▼──────────────────┐
+  │  ML Layer   │     │    TTS Endpoint          │
+  │ (classify,  │     │  (edge-tts, langdetect)  │
+  │  extract)   │     └─────────────────────────┘
+  └──────┬──────┘
+         │
+  ┌──────▼──────────────────────────────────────┐
+  │         Conversation Engine                 │
+  │   (session, intent, entity, RAG, strict)    │
+  └──────┬──────────────────────┬───────────────┘
+         │                      │
+  ┌──────▼──────┐      ┌────────▼───────────────┐
+  │Retrieval srv│      │  Response Generation   │
+  │(DTS API,    │      │ (LLM stream, Template  │
+  │ RAG Service)│      │  fallback)             │
+  └──────┬──────┘      └────────────────────────┘
+         │
+  ┌──────▼──────────────────────────────────────┐
+  │             Database Layer                  │
+  │   MySQL: sessions, chat_logs, training_data │
+  └─────────────────────────────────────────────┘
+
+Each layer has a well-defined responsibility and communicates exclusively through
+Python function calls or HTTP, keeping the code maintainable and testable.
+
+
+================================================================================
+4. APPLICATION ENTRY POINT (app/main.py)
+================================================================================
+
+The file app/main.py is where the FastAPI application is created and all middleware is registered.
+It is also responsible for startup and shutdown events.
+
+HOW IT IS BUILT:
+
+  The FastAPI app uses the "lifespan" context manager (a modern alternative to @app.on_event).
+  On startup, it performs two critical initialization steps:
+
+  Step 1 — Database Bootstrap:
+    Base.metadata.create_all(bind=engine) is called. This tells SQLAlchemy to inspect all ORM
+    model classes (Session, ChatLog, TrainingData) and automatically CREATE the corresponding
+    MySQL tables if they do not already exist. This means the app is self-initializing — no
+    manual SQL is required on first run.
+
+  Step 2 — ML Model Loading:
+    The global IntentClassifier instance is loaded from disk using classifier.load(). This reads
+    the serialized model file from ml_models/intent_model.joblib.
+    - If the file exists: the model is loaded and ready immediately.
+    - If the file does NOT exist but ml_data/intent_training.csv exists: the model is automatically
+      trained from scratch using the CSV data, then saved to disk.
+    - If neither exists: a warning is printed and the API still starts (but will return "unknown"
+      for all classifications until the model is trained via POST /api/train).
+
+  CORS Middleware:
+    Cross-Origin Resource Sharing (CORS) is configured so the web-app (running on a different
+    port, e.g., localhost:5173) can make API requests to the backend (localhost:8000). The allowed
+    origins are loaded from the CORS_ORIGINS environment variable so they can be changed without
+    editing code.
+
+  Rate Limiter:
+    The slowapi limiter instance is attached to app.state.limiter. This injects the rate limiter
+    into FastAPI's dependency injection system so individual routes can apply per-route limits.
+    A custom exception handler converts RateLimitExceeded exceptions into clean HTTP 429 responses.
+
+  Root Route:
+    A root GET / endpoint returns basic information (name, version, docs URL, health URL) so
+    developers know the API is running without needing to check documentation.
+
+
+================================================================================
+5. CONFIGURATION SYSTEM (app/config.py)
+================================================================================
+
+All configuration is loaded from environment variables using pydantic-settings. The Settings class
+inherits from BaseSettings, which automatically reads .env file values at startup.
+
+SETTINGS DEFINED:
+
+  DATABASE_URL          — Full MySQL connection string (default: localhost, root, password)
+  DTS_API_BASE_URL      — The base URL of the real DTS API server
+  DTS_MOCK_MODE         — Boolean flag (default: True). When True, the app uses built-in sample
+                          document data instead of calling the real DTS backend.
+  CORS_ORIGINS          — Comma-separated list of allowed CORS origins (default includes
+                          localhost:3000 and localhost:5173 for the web app)
+  HOST / PORT           — Server binding address (default: 0.0.0.0:8000)
+  MODEL_DIR             — Filesystem path where the trained model is saved/loaded
+  TRAINING_DATA_DIR     — Filesystem path where CSV training data is stored
+  CONFIDENCE_THRESHOLD  — Minimum confidence score (0.0 to 1.0) for the classifier to accept
+                          a prediction. Below this threshold, the intent is reported as "unknown".
+                          Default: 0.4 (40%).
+
+The Settings object is instantiated once at module import time and shared as a singleton across
+the entire application via "from app.config import settings".
+
+
+================================================================================
+6. MACHINE LEARNING PIPELINE
+================================================================================
+
+The ML pipeline is the brain of the system. It converts raw, free-form user text into a
+structured intent classification that the rest of the application can act on.
+
+────────────────────────────────────────────────
+6a. TEXT PREPROCESSING (app/ml/preprocessing.py)
+────────────────────────────────────────────────
+
+Before any text goes into the classifier, it is preprocessed by preprocess_text(). This is
+critical for good classification accuracy because raw user text contains noise (punctuation,
+capital letters, stopwords) that would confuse TF-IDF.
+
+The preprocessing pipeline, applied in order:
+
+  1. LOWERCASING
+     All characters are converted to lowercase. "What is PDID 001" becomes "what is pdid 001".
+     This prevents the model from treating "What" and "what" as different tokens.
+
+  2. WHITESPACE NORMALIZATION
+     Multiple spaces, tabs, and newlines are collapsed into a single space using regex.
+
+  3. PDID PATTERN NORMALIZATION
+     The regex pattern r"pdid[\s\-_]*(\d+)" normalizes all PDID formats to a standard form.
+     - "PDID-001" → "pdid 001"
+     - "PDID001"  → "pdid 001"
+     - "pdid 001" → "pdid 001" (unchanged)
+     This ensures the classifier always sees the same representation regardless of how the user
+     writes the PDID reference.
+
+  4. PUNCTUATION REMOVAL
+     Most punctuation is stripped. Only these characters are kept:
+     - Hyphens (-): used in PDID patterns
+     - Question marks (?): help distinguish questions from statements
+     - Exclamation marks (!): help detect complaints
+     Filipino characters (ñ, accented vowels like á, é, í, ó, ú) are also explicitly preserved
+     so Filipino-language messages are not corrupted.
+
+  5. STOPWORD REMOVAL
+     Common English and Filipino stopwords are removed to reduce noise in TF-IDF features.
+     English stopwords include: a, an, the, is, are, have, do, will, I, me, my, we, you, it, etc.
+     Filipino stopwords include: ang, ng, sa, na, ay, mga, si, at, o, din, rin, pa, lang, etc.
+     Removing stopwords ensures TF-IDF focuses on meaningful content words.
+
+  FINAL RESULT: A clean, normalized string ready for TF-IDF vectorization.
+  Example: "What is the current status of my document?" → "current status document ?"
+
+────────────────────────────────────────────────
+6b. INTENT CLASSIFIER (app/ml/intent_classifier.py)
+────────────────────────────────────────────────
+
+The IntentClassifier class wraps a scikit-learn Pipeline that converts text to a classified
+intent with a probability score. This is the core ML model.
+
+ALGORITHM: TF-IDF + SGDClassifier (Stochastic Gradient Descent)
+
+  WHY TF-IDF?
+  TF-IDF (Term Frequency–Inverse Document Frequency) converts text into a numeric vector. Each
+  word becomes a dimension. Words that appear a lot in one class but rarely across all classes
+  get higher weights — these are the "distinguishing" words. For example, "status" and "document"
+  are strong signals for document_status intent.
+
+  Configuration used:
+    - ngram_range=(1, 2): Uses both single words AND consecutive word pairs (bigrams).
+      This means "check document" is a feature in addition to "check" and "document" separately.
+      Bigrams capture more context and dramatically improve accuracy for short intents.
+    - max_features=5000: Only the 5000 most informative features are retained to keep the
+      model small and fast.
+    - sublinear_tf=True: Applies log scaling to term frequencies (1 + log(tf)) to reduce the
+      impact of very frequent terms.
+
+  WHY SGDClassifier?
+  SGDClassifier is a linear classifier trained with stochastic gradient descent. It is extremely
+  fast and handles multi-class classification well. It was chosen over alternatives like SVM or
+  Naive Bayes because:
+    - It supports online learning (can be retrained incrementally in theory)
+    - With "modified_huber" loss function, it natively supports predict_proba() for confidence scores
+    - class_weight="balanced" automatically compensates for imbalanced class sizes in training data
+
+  THE PIPELINE:
+    pipeline = Pipeline([
+        ("tfidf", TfidfVectorizer(...)),
+        ("clf", SGDClassifier(...)),
+    ])
+  The Pipeline chains the vectorizer and classifier together so predict() automatically
+  preprocesses → vectorizes → classifies in one call.
+
+TRAINING:
+  The train() method accepts either a CSV filepath or a list of (text, intent) tuples.
+  - Each text sample is passed through preprocess_text() first
+  - The pipeline is fit on all samples at once
+  - Training accuracy is calculated immediately after fitting (on training data)
+  - The trained pipeline is saved to ml_models/intent_model.joblib using joblib.dump()
+  - Training stats (sample count, intent count, accuracy) are returned for API response
+
+LOADING:
+  The load() method reads the serialized .joblib file from disk using joblib.load(). The entire
+  scikit-learn pipeline object is deserialized, including both the TF-IDF vocabulary weights
+  and the SGD classifier weights. This takes milliseconds.
+
+PREDICTION:
+  The predict() method:
+  1. Preprocesses the raw input text
+  2. Calls pipeline.predict() to get the most likely intent label
+  3. Calls pipeline.predict_proba() to get confidence probabilities for ALL intents
+  4. Takes the maximum probability as the confidence score
+  5. If confidence < CONFIDENCE_THRESHOLD (default 0.4), returns ("unknown", confidence)
+     instead of a low-confidence prediction — preventing hallucinated responses
+  6. Returns (intent_label, confidence_score) as a tuple
+
+INTENT CLASSES (from training data):
+  - document_status: User wants to know the status of a document
+  - follow_up:       User is providing a PDID in response to being asked
+  - greeting:        User says hello, hi, good morning, etc.
+  - help:            User asks what the bot can do
+  - complaint:       User expresses frustration or complaints
+  - thanks:          User says thank you
+  - goodbye:         User says bye, see you, etc.
+  - unknown:         Anything that doesn't fit with enough confidence
+
+────────────────────────────────────────────────
+6c. ENTITY EXTRACTOR (app/ml/entity_extractor.py)
+────────────────────────────────────────────────
+
+While the classifier identifies WHAT the user wants to do, the entity extractor identifies the
+KEY DATA in the message — specifically the PDID (document tracking number).
+
+Regex is used instead of ML for entity extraction because PDIDs are structured and predictable.
+Regex is faster, more reliable, and doesn't require training data for this purpose.
+
+THREE PATTERNS ARE TRIED IN ORDER OF SPECIFICITY:
+
+  Pattern 1 (Explicit "PDID" keyword):
+    r"(?i)\bpdid[\s\-_]*(\d{1,10})\b"
+    Matches: "PDID 001", "PDID-001", "PDID001", "pdid001", "pdid 1000", etc.
+    The (?i) flag makes it case-insensitive.
+
+  Pattern 2 (PDID with connector words):
+    r"(?i)\bpdid\s+(?:is|number|no\.?|num)\s+(\d{1,10})\b"
+    Matches: "My PDID is 007", "PDID number 003", "PDID no. 100"
+    This handles more verbose user phrasing.
+
+  Pattern 3 (Standalone number — follow-up context):
+    r"^\s*(\d{1,10})\s*$"
+    Matches ONLY if the entire message is just a number (e.g., the user types "001").
+    This handles the common scenario where the bot asks "What is your PDID?" and the
+    user replies with just the number.
+
+NORMALIZATION:
+  Once a PDID is extracted, it is normalized:
+  - Leading zeros are stripped: "001" → "1"
+  - Then zero-padded to 3 digits: "1" → "001"
+  This ensures "1", "01", and "001" are all treated as the same document.
+
+RESULT:
+  Returns {"pdid": "001"} if a PDID is found, or {} if no entities were extracted.
+
+
+================================================================================
+7. THE CONVERSATION ENGINE (app/services/conversation.py)
+================================================================================
+
+The conversation engine is the core orchestrator. It calls all other components in the correct
+order and manages the state of a conversation across multiple messages.
+
+THE FULL PIPELINE (executed for every incoming chat message):
+
+  STEP 0 — CONTEXT PRE-FETCH (Admin Documents Search)
+    Before processing the session, the engine calls fetch_admin_documents() with the user's
+    raw message as a search keyword. This hits the DTS Admin API at /api/documents and filters
+    results where the document title or subject contains the keyword. Any matching documents are
+    appended as additional context to the final reply. This gives the response more grounding
+    in real data when a user mentions something like "leave application" in their message.
+
+  STEP 1 — SESSION MANAGEMENT
+    get_or_create_session() is called with the provided session_id (if any).
+    - If a session_id is provided and found in the database: that session is loaded and its
+      last_active timestamp is updated.
+    - If no session_id or the session is not found: a new Session record is created with a
+      fresh UUID and an empty context JSON object.
+    The session persists conversation state (pending_intent, last_pdid) in MySQL.
+
+  STEP 2 — INTENT CLASSIFICATION
+    classifier.predict(message) is called. The raw message text is preprocessed and passed
+    through the TF-IDF + SGDClassifier pipeline to produce (intent, confidence).
+
+  STEP 3 — ENTITY EXTRACTION
+    extract_entities(message) is called in parallel conceptually (but sequentially in code).
+    This applies the regex patterns described above to find any PDID in the message.
+
+  STEP 4 — MULTI-TURN CONTEXT RESOLUTION
+    This is the logic that makes the conversation feel intelligent across multiple messages.
+    The session.context JSON stores two keys:
+
+    a) "pending_intent": Set to "document_status" when the bot has asked the user for a PDID
+       but hasn't received one yet. When the user later provides a PDID (or just a plain number),
+       the engine detects the pending state and overrides the intent to "follow_up" so the
+       response generator knows to look up the document. The pending_intent is then cleared.
+
+    b) "last_pdid": Whenever a PDID is found (either just now or in a previous message), it is
+       stored here. If a new message doesn't contain a PDID but the intent is document-related,
+       the stored last_pdid is automatically injected into the entities. This means a user can
+       ask "What is the status of my document?" followed by just "001" and then "What about the
+       origin office?" — and the third message will still know the PDID from context.
+
+  STEP 5 — DTS DOCUMENT LOOKUP
+    If a PDID is in the entities (either extracted just now or from session context), get_document()
+    is called. This either returns mock data or calls the real DTS API and returns a parsed dict.
+
+  STEP 5b — RAG DOCUMENT RETRIEVAL
+    For general LGU queries or unknown intents without a PDID, rag_service.retrieve_context()
+    is called to fetch relevant knowledge base excerpts to inform the LLM.
+
+  STEP 6 — RESPONSE GENERATION
+    The external LLM Service is called to generate a conversational response (via HTTP POST
+    or Server-Sent Events streaming). If the LLM generation fails or is explicitly bypassed
+    for exact status formatting, it falls back to generate_response() which uses templates.
+
+  STEP 6b — AUTO-TRANSLATION TO FILIPINO
+    After the English response is generated, the translation layer runs:
+    1. langdetect.detect() is run on the user's original message to detect if it's Tagalog/Filipino.
+    2. The "language" field from the API request is also checked (e.g., "tl", "tagalog", "fil").
+    3. If either check indicates Filipino, deep-translator's GoogleTranslator(source='en', target='tl')
+       is called to translate the English response to Filipino.
+    4. The translation runs in a thread pool (asyncio.to_thread) to avoid blocking the async event loop.
+    5. If translation fails for any reason (network, API error), the English response is kept as fallback.
+
+  STEP 7 — CHAT LOGGING
+    Both the user message and the bot reply are saved to the chat_logs table in MySQL via
+    log_message(). The user message log includes intent, confidence, and entities for analysis.
+
+  RETURN:
+    {
+      "reply": "<full response text>",
+      "session_id": "<uuid>",
+      "intent": "<classified intent>",
+      "confidence": <float 0.0-1.0>,
+      "entities": {"pdid": "001"}  (or {})
+    }
+
+
+================================================================================
+8. DOCUMENT RETRIEVAL SERVICES
+================================================================================
+
+────────────────────────────────────────────────
+8a. DTS API CLIENT (app/services/dts_client.py)
+────────────────────────────────────────────────
+
+The DTS client handles all interaction with the document tracking backend. It supports two modes:
+mock mode (for development/testing) and live mode (for production with the real DTS API).
+
+RESPONSE PARSER: parse_dts_document()
+  The real DTS API returns a deeply nested JSON structure. This function flattens it into a
+  simple, AI-friendly dict. It extracts:
+
+  - Basic metadata: pdid, title, agency, origin_office, subject, created_at, created_by
+  - Status determination:
+      * "Completed" if document_completed_status is True
+      * "In Progress" if the last route stop has no date_out (still being processed)
+      * "In Transit" if routes exist but the last stop has a date_out
+  - Current location: the last route stop's office name
+  - Current holder: the last employee who performed an action on the document
+  - Route history: a list of every office the document has passed through, including
+    received_at and date_out timestamps, the responsible person, and their action
+  - The numbered prefix in office names (e.g., "1. City Health Office") is stripped to "City Health Office"
+  - Photo URL: if an employee profile photo path is available, the full URL is built by
+    prepending the DTS_API_BASE_URL
+
+  The parser handles two response formats:
+  - Wrapped: { "success": true, "data": { ... } }  — used by mock data / documents.json
+  - Root-level: { "id": ..., "title": ..., ... }   — used by the live DTS API
+
+MOCK MODE:
+  MOCK_DOCUMENTS is a dictionary populated at startup by _load_mock_data(). It first tries to
+  load a real DTS response from documents.json in the project root. If that file exists and is
+  valid JSON, it is parsed using parse_dts_document() and added to the mock dict. Then, three
+  built-in sample documents (PDIDs 001, 002, 003) are added as fallback entries if their keys
+  aren't already in the dict. The built-in samples already exist in flat/parsed format.
+
+LIVE MODE:
+  When DTS_MOCK_MODE is False, get_document() makes an async HTTP GET request using httpx to:
+    GET {DTS_API_BASE_URL}/api/documents/{pdid}
+  The response is parsed with parse_dts_document() and then cached in the TTLCache for 60 seconds.
+  This means if multiple users look up the same PDID within a minute, only one HTTP call is made.
+  404 responses (document not found) are also cached to avoid hammering the DTS API with not-found requests.
+
+CACHING:
+  _document_cache is a TTLCache(maxsize=256, ttl=60). It holds up to 256 documents in memory
+  for up to 60 seconds each. After 60 seconds, entries expire and the next lookup hits the real API.
+
+PDID NORMALIZATION:
+  PDIDs go through normalization before lookup:
+  - pdid.strip().lstrip("0") or "0" → removes leading zeros to get the canonical form
+  - .zfill(3) → re-pads to 3 digits for use as the dictionary key (e.g., "1" → "001")
+
+
+────────────────────────────────────────────────
+8b. RAG SERVICE (app/services/rag_service.py)
+────────────────────────────────────────────────
+
+The RAG (Retrieval-Augmented Generation) service allows the AI to answer general local government
+and tourism queries based on ingested documents.
+
+HOW IT WORKS:
+  - Vector Embeddings: Uses the all-MiniLM-L6-v2 SentenceTransformer to encode text.
+  - Chunking: Documents fetched from the Admin API undergo semantic chunking (500 chars with 100 overlap).
+  - Retrieval: When a query is received, it computes cosine similarity between the query embedding
+    and all indexed chunk embeddings.
+  - Hybrid Keyword Boost: Exact keyword matches grant a +0.3 boost to similarities, ensuring precise
+    lookups (e.g. names) float above generic semantic matches.
+  - Ingestion API: An endpoint (/api/rag/ingest) allows the Admin Dashboard to push new documents
+    directly into the live index, appending and saving to the `rag_cache.pkl` disk cache without restarts.
+
+
+================================================================================
+9. RESPONSE GENERATION LAYER
+================================================================================
+
+────────────────────────────────────────────────
+9a. TEMPLATE GENERATOR (app/services/response_generator.py)
+────────────────────────────────────────────────
+
+The response generator turns the structured (intent, entities, document) data into human-readable
+text that gets sent back to the user.
+
+INTENT ROUTING:
+  generate_response() is a single function that uses if/elif branching on the intent label.
+  Each intent has a dedicated handler:
+
+  "document_status" + document found:
+    Calls _format_document_status(document) to produce a rich, formatted response.
+
+  "document_status" + no PDID:
+    Returns a prompt asking the user for their PDID. The session context simultaneously
+    records pending_intent="document_status" so the next message is handled correctly.
+
+  "document_status" + PDID given but not found:
+    Returns an error message with the PDID the user provided, so they can verify it.
+
+  "follow_up" + document found:
+    Same as document_status with data — calls _format_document_status().
+
+  "follow_up" + PDID but not found / no PDID:
+    Appropriate error messages asking for a PDID.
+
+  "greeting": Randomly picks from 3 greeting response templates, so the bot doesn't sound
+              repetitive when users say hello.
+
+  "help": Returns a formatted help message listing the bot's capabilities.
+
+  "complaint": Randomly picks from 2 empathetic complaint responses.
+
+  "thanks": Randomly picks from 4 thank-you response variations.
+
+  "goodbye": Randomly picks from 4 goodbye response variations.
+
+  Fallback (unknown or unhandled): Returns a helpful message explaining what the bot can do.
+
+RESPONSE VARIATION:
+  For conversational intents (greeting, thanks, goodbye, complaint), random.choice() picks
+  from a list of pre-written response templates. This makes the bot feel more natural and less
+  robotic compared to always returning the exact same string.
+
+DOCUMENT STATUS FORMATTING (_format_document_status):
+  This function builds the detailed status reply. It:
+  - Shows a PDID header with emoji (📄)
+  - Lists accountable person, title, status (with ✅ or 🔄 emoji), current location,
+    current action, origin office, creator, creation date, total processing time, office count
+  - Adds a full Route History section listing every office the document passed through,
+    showing who held it, what action was taken, TAT (turnaround time), and timestamps
+  - The currently active stop is marked with a 📍 emoji and "Currently here" label
+  - Past stops show "handled by" while the current stop shows "held by" for clarity
+
+────────────────────────────────────────────────
+9b. LLM CLIENT (app/services/llm_client.py)
+────────────────────────────────────────────────
+
+The LLM Client communicates with an external, centralized LLM Service to generate dynamic,
+conversational responses.
+
+HOW IT WORKS:
+  - Prompt Building: Structures a prompt injecting intent, entities, fetched documents, and RAG
+    excerpts for the external LLM to process.
+  - Strict Bypassing: If a hard-structured response (like the Document Status card) is required,
+    it returns None for the prompt, intentionally forcing `conversation.py` to bypass the LLM and
+    use the structured template generator. This prevents hallucinated status responses.
+  - Streaming Support (SSE): Via `generate_llm_response_stream()`, it calls the LLM service's
+    `/api/generate-stream` endpoint. It uses `httpx` to stream individual tokens back to the user
+    in real-time as Server-Sent Events (SSE).
+
+
+================================================================================
+10. DATABASE LAYER
+================================================================================
+
+────────────────────────────────────────────────
+10a. ORM MODELS (app/db/models.py)
+────────────────────────────────────────────────
+
+Three SQLAlchemy ORM models map to three MySQL tables:
+
+  sessions TABLE:
+    - id (VARCHAR 36, PRIMARY KEY): UUID string identifying the conversation session
+    - created_at (DATETIME): When the session was first created
+    - last_active (DATETIME): Updated on every request to track session activity
+    - context (JSON): Stores the session's memory between turns:
+        * pending_intent: "document_status" if we're waiting for a PDID
+        * last_pdid: The last PDID mentioned in this session
+
+  chat_logs TABLE:
+    - id (INTEGER, AUTO INCREMENT, PRIMARY KEY)
+    - session_id (VARCHAR 36, FOREIGN KEY → sessions.id, INDEXED): Links to the session
+    - role (VARCHAR 10): "user" or "bot"
+    - message (TEXT): The full message content
+    - intent (VARCHAR 50, NULLABLE): Only set for user messages
+    - confidence (FLOAT, NULLABLE): Classification confidence, only for user messages
+    - entities (JSON, NULLABLE): Extracted entities (e.g., {"pdid": "001"}), only for user messages
+    - timestamp (DATETIME): When the message was recorded
+    The cascade="all, delete-orphan" relationship means deleting a session automatically
+    deletes all its associated chat logs.
+
+  training_data TABLE:
+    - id (INTEGER, AUTO INCREMENT, PRIMARY KEY)
+    - text (TEXT): The training example text
+    - intent (VARCHAR 50, INDEXED): The label for this example
+    - created_at (DATETIME): When this training example was added
+    This table allows adding new training examples via SQL and retraining via POST /api/train.
+
+────────────────────────────────────────────────
+10b. DATABASE CONNECTION (app/db/database.py)
+────────────────────────────────────────────────
+
+SQLAlchemy's create_engine() is used to create a connection pool to MySQL.
+get_db() is a FastAPI dependency that yields a database session per request and ensures
+the session is always closed after the request completes (even if an exception occurs).
+
+────────────────────────────────────────────────
+10c. CHAT LOGGER (app/services/chat_logger.py)
+────────────────────────────────────────────────
+
+log_message() is a simple utility that creates a ChatLog ORM object, adds it to the db session,
+commits it, and returns the created record. It is called twice per request: once for the user
+message (with intent, confidence, entities) and once for the bot reply (without those fields).
+
+
+================================================================================
+11. API LAYER
+================================================================================
+
+────────────────────────────────────────────────
+11a. PYDANTIC SCHEMAS (app/schemas/chat.py)
+────────────────────────────────────────────────
+
+Pydantic models define the exact shape of every request and response body. FastAPI uses these
+for automatic JSON serialization/deserialization, input validation, and Swagger documentation.
+
+  ChatRequest:
+    - message (str, required, 1–1000 chars): The user's message
+    - session_id (str, optional): UUID from a previous response to continue a conversation
+    - language (str, default "en"): Language preference — "en" for English, "tl" for Filipino
+    - topic (str, optional): Enforces strict intent routing ("docs" for Tracking, "lgu" for KB)
+
+  ChatResponse:
+    - reply (str): The AI's response text
+    - session_id (str): Session UUID (pass this back in the next request)
+    - intent (str): What the classifier determined the user wanted
+    - confidence (float): How certain the classifier is (0.0 to 1.0)
+    - entities (dict): Extracted data like {"pdid": "001"}
+
+  TrainRequest:
+    - source (str, default "csv"): "csv" or "database" — where to load training data from
+
+  TrainResponse:
+    - status, num_samples, num_intents, intents, training_accuracy
+
+  HealthResponse:
+    - status, model_loaded, model_intents
+
+  RagIngestRequest:
+    - filename (str, required): Original filename of the uploaded document
+    - text (str, required): Extracted plain text from the document
+
+  RagIngestResponse:
+    - success (bool), message (str), chunks_added (int)
+
+  TTSRequest:
+    - text (str, required, 1–5000 chars): Text to convert to speech
+    - voice (str, default "en-US-GuyNeural"): Which neural voice to use
+
+────────────────────────────────────────────────
+11b. REST ENDPOINTS (app/api/routes.py)
+────────────────────────────────────────────────
+
+All routes are registered under the /api prefix via APIRouter. There are four endpoints:
+
+  POST /api/chat (30 requests/minute per IP)
+    The main chat endpoint. Receives a ChatRequest, calls process_message() from the
+    conversation engine, and returns a ChatResponse. All ChatRequest validation is handled
+    automatically by Pydantic before the function is even called.
+
+  POST /api/chat/stream (30 requests/minute per IP)
+    Streaming chat endpoint using Server-Sent Events (SSE). Yields chunks of the AI's
+    response as they are generated by the LLM in real-time.
+
+  POST /api/train (5 requests/minute per IP)
+    Triggers retraining of the intent classifier. If source="csv", it reads from the training
+    CSV file. If source="database", it queries all rows from the training_data table and trains
+    from those. Returns training statistics.
+
+  GET /api/health (no rate limit)
+    Returns whether the ML model is loaded and which intent classes it knows. Used by monitoring
+    systems and for quick sanity checks.
+
+  POST /api/tts (20 requests/minute per IP)
+    Text-to-Speech endpoint. Accepts text and a voice name, returns an MP3 audio stream.
+    (Detailed explanation in section 13.)
+
+  POST /api/rag/ingest (no rate limit)
+    Ingests extracted text from a document into the live RAG index. Called by the Admin Dashboard.
+
+
+================================================================================
+12. RATE LIMITER (app/rate_limiter.py)
+================================================================================
+
+A single Limiter instance is created using slowapi and keyed by get_remote_address (the client's
+IP address). This instance is imported and used in two places:
+
+  1. In main.py: attached to app.state and a custom RateLimitExceeded handler is registered
+  2. In routes.py: each route uses @limiter.limit("N/minute") as a decorator
+
+When a client exceeds its limit, the custom exception handler returns:
+  HTTP 429 Too Many Requests
+  {"detail": "Too many requests. Please slow down."}
+
+Limits per endpoint:
+  - /api/chat:  30 requests per minute
+  - /api/tts:   20 requests per minute
+  - /api/train:  5 requests per minute
+  - /api/health: no limit (lightweight health check)
+
+
+================================================================================
+13. TEXT-TO-SPEECH (TTS) FEATURE
+================================================================================
+
+The TTS feature converts the AI's text reply into audio using Microsoft Edge Neural TTS voices
+via the edge-tts Python library. This streams neural-quality speech audio.
+
+HOW THE TTS ENDPOINT WORKS (POST /api/tts):
+
+  STEP 1 — TEXT CLEANING (_strip_markdown):
+    Before synthesizing speech, markdown formatting and emojis are stripped from the text
+    because TTS engines would read them literally ("asterisk asterisk Document Status asterisk
+    asterisk" instead of just "Document Status"). The cleaning performs:
+    - Remove bold markers: **text** → text
+    - Remove italic markers: *text* → text
+    - Remove all emojis and symbols (Unicode ranges for emoji/symbol blocks)
+    - Expand "No." abbreviation to "Number" for natural reading
+    - Remove "• " bullet points
+    - Convert newlines to ". " pauses for more natural speech flow
+    - Collapse extra whitespace
+
+  STEP 2 — LANGUAGE DETECTION & VOICE SELECTION:
+    The requested voice is used by default. However, if the voice is NOT already the Filipino
+    voice (fil-PH-AngeloNeural), langdetect.detect() is run on the cleaned text. If the text
+    is detected as Tagalog ("tl"), the voice is automatically switched to fil-PH-AngeloNeural.
+    This means even if the frontend sends the English voice, Filipino responses will automatically
+    use the correct Filipino voice.
+
+  STEP 3 — VOICE VALIDATION:
+    Only voices in the ALLOWED_VOICES set are accepted:
+    - "en-US-GuyNeural" (English male)
+    - "fil-PH-AngeloNeural" (Filipino male)
+    Any other voice string returns HTTP 400.
+
+  STEP 4 — AUDIO GENERATION:
+    edge_tts.Communicate(text, voice) is called. The audio is streamed in chunks. All audio
+    chunks are collected into an in-memory BytesIO buffer.
+
+  STEP 5 — STREAMING RESPONSE:
+    The BytesIO buffer is returned as a StreamingResponse with media_type="audio/mpeg". The
+    frontend receives a binary MP3 stream.
+
+AVAILABLE NEURALTTS VOICES:
+  - en-US-GuyNeural:     English, male, US accent
+  - fil-PH-AngeloNeural: Filipino, male, Philippine accent
+
+
+================================================================================
+14. MULTI-LANGUAGE SUPPORT (TRANSLATION & TTS)
+================================================================================
+
+The system achieves bilingual (English/Filipino) support through three cooperating mechanisms:
+
+MECHANISM 1 — FRONTEND LANGUAGE SELECTION:
+  The web-app has a language select dropdown with "English" and "Filipino" options. When the
+  user selects Filipino, the "language: tl" field is sent in API requests.
+
+MECHANISM 2 — AUTO-DETECTION IN CONVERSATION ENGINE:
+  Even without the frontend explicitly setting the language, if the user types in Tagalog/Filipino,
+  langdetect will detect the language and trigger translation anyway. This means Filipino users
+  who just type naturally get Filipino responses automatically.
+
+MECHANISM 3 — TTS VOICE AUTO-SELECTION:
+  The web-app maps the language dropdown to a voice (en-US-GuyNeural or fil-PH-AngeloNeural)
+  when calling /api/tts. Additionally, the server-side TTS endpoint also auto-detects Filipino
+  text and overrides the voice if needed — a double safety net.
+
+TRANSLATION FLOW:
+  English response → langdetect checks → if Filipino: GoogleTranslator('en' → 'tl') → Filipino response
+  The translation uses deep-translator's GoogleTranslator which calls the Google Translate API.
+  To avoid blocking the async event loop (GoogleTranslator is a synchronous library), it is
+  wrapped in asyncio.to_thread() which runs it in a thread pool executor.
+
+FAILURE SAFETY:
+  Both translation and language detection are wrapped in try/except blocks. Any failure
+  (network outage, API quota, unknown language) silently falls back to the English response
+  rather than crashing the request.
+
+
+================================================================================
+15. WEB CHAT INTERFACE (web-app/)
+================================================================================
+
+The web-app is a Vite-based single-page application that serves as a browser-based test client
+for the AI engine. It is not a full production frontend — it demonstrates all AI features.
+
+FILES:
+  index.html:      The application shell. Defines the chat layout: header (with language select),
+                   scrollable message area, and input form. Uses the Inter font from Google Fonts.
+                   Includes an invisible <audio> element for TTS playback.
+
+  style.css:       Full dark-theme design. Uses CSS variables for colors, glassmorphism effects,
+                   smooth transitions, and custom scrollbar styling. AI and user message bubbles
+                   have distinct visual styles (outlined vs. filled). Typing indicator animation
+                   uses three bouncing dots created with CSS @keyframes.
+
+  main.js:         All client-side logic in a single ES Module file. Features:
+                   - State management: sessionId (for multi-turn sessions) and isWaiting (prevents
+                     double-submitting while the API is processing)
+                   - addMessageToUI(): Creates message DOM elements dynamically with the correct
+                     CSS classes for user/AI alignment and styling
+                   - showTypingIndicator() / removeTypingIndicator(): Inserts and removes the
+                     animated three-dot typing indicator while waiting for the API response
+                   - sendMessageToAPI(): Makes a POST /api/chat fetch call with the message,
+                     current session_id, and language preference. Stores the returned session_id
+                     for subsequent requests.
+                   - generateTTS(): Makes a POST /api/tts fetch call with the AI reply text and
+                     the appropriate voice for the selected language. Converts the MP3 binary
+                     response to a Blob URL and plays it via the hidden <audio> element.
+                     Automatically revokes the object URL after playback to free memory.
+                   - Form submit handler: Orchestrates the full UX flow: freeze UI → show user
+                     bubble → show typing indicator → call API → remove indicator → show AI reply
+                     → trigger TTS → restore UI.
+
+  vite.config.js:  Configures Vite's dev server proxy. All requests to /api are forwarded to
+                   http://localhost:8000. This eliminates CORS issues during development because
+                   the browser sees everything as same-origin.
+                   Example: fetch('/api/chat') → proxied to http://localhost:8000/api/chat
+
+  package.json:    Declares "vite" as a dev dependency. Scripts: "dev" (start dev server),
+                   "build" (production bundle), "preview" (preview built bundle).
+
+
+================================================================================
+16. SECURITY FEATURES
+================================================================================
+
+RATE LIMITING (slowapi):
+  All mutation endpoints are protected by per-IP rate limits to prevent:
+  - Chat flooding: 30/minute limit on /api/chat
+  - TTS abuse: 20/minute limit on /api/tts
+  - Training spam: 5/minute limit on /api/train (training is computationally expensive)
+
+INPUT VALIDATION (pydantic):
+  All request bodies are validated by Pydantic before reaching the handler:
+  - Messages must be 1–1000 characters
+  - TTS text must be 1–5000 characters
+  - Invalid JSON or missing required fields return HTTP 422 automatically
+
+VOICE ALLOWLIST (TTS):
+  The /api/tts endpoint only accepts voices from a hard-coded ALLOWED_VOICES set. Any attempt
+  to specify an arbitrary voice string returns HTTP 400. This prevents potential abuse of the
+  edge-tts library with unexpected voice identifiers.
+
+CORS CONFIGURATION:
+  Only origins listed in CORS_ORIGINS (from .env) are allowed to make cross-origin requests.
+  Credentials mode is enabled, meaning session cookies (if used in the future) would be handled
+  correctly.
+
+ENVIRONMENT-BASED SECRETS:
+  Database credentials, API URLs, and CORS origins are never hardcoded — they are always loaded
+  from the .env file. The .env file is in .gitignore to prevent credentials from being committed.
+
+
+================================================================================
+17. DATA FLOW — FULL REQUEST LIFECYCLE
+================================================================================
+
+This traces exactly what happens when a user sends "What is the status of PDID 001?" in
+a new conversation via the web app:
+
+  1. User types message, selects "English", clicks Send.
+  2. main.js freezes the UI, adds user bubble to chat, shows typing indicator.
+  3. main.js sends: POST /api/chat
+     Body: {"message": "What is the status of PDID 001?", "language": "en"}
+
+  4. FastAPI receives request, Pydantic validates ChatRequest.
+  5. Rate limiter checks client IP — within 30/minute limit, proceeds.
+
+  6. process_message() is called:
+     a. fetch_admin_documents("What is the status of PDID 001?") — searches DTS API
+        for documents matching the keyword. If nothing found, context_string = "".
+     b. get_or_create_session(db, None) — no session_id provided, creates new UUID session
+        in MySQL sessions table. session.context = {}
+     c. classifier.predict("What is the status of PDID 001?"):
+        - preprocess_text() → "status pdid 001 ?"
+        - TF-IDF vectorizes → numeric vector
+        - SGD predicts → "document_status", confidence 0.94
+     d. extract_entities("What is the status of PDID 001?"):
+        - Pattern 1 matches "PDID 001" → pdid = "001"
+        - entities = {"pdid": "001"}
+     e. Session context check: context = {}, no pending_intent, no last_pdid.
+        intent is "document_status" AND pdid IS in entities → no context change needed.
+        last_pdid stored: update_session_context(db, session, "last_pdid", "001")
+     f. get_document("001") is called:
+        In mock mode: returns the built-in dict for PDID 001 (Juan Dela Cruz leave application)
+        In live mode: calls GET {DTS_API_BASE_URL}/api/documents/1, parses result
+     g. generate_response("document_status", {"pdid": "001"}, document_data, {}):
+        → calls _format_document_status(document_data)
+        → builds the full formatted reply text with PDID header, status, location, route history
+     h. langdetect.detect(message) → "en", language param = "en" → no translation.
+     i. log_message(db, session.id, "user", message, "document_status", 0.94, {"pdid": "001"})
+        log_message(db, session.id, "bot", reply)
+
+  7. ChatResponse returned:
+     {"reply": "📄 **Document Status for PDID 001**...", "session_id": "abc-uuid", "intent": "document_status", "confidence": 0.94, "entities": {"pdid": "001"}}
+
+  8. main.js receives response, stores session_id for future requests.
+  9. Removes typing indicator, adds AI bubble with the reply text.
+  10. generateTTS(reply, "en") → POST /api/tts {"text": "...", "voice": "en-US-GuyNeural"}
+  11. TTS endpoint:
+      - _strip_markdown(text) cleans emojis and formatting
+      - langdetect confirms English text → voice stays "en-US-GuyNeural"
+      - edge_tts.Communicate(clean_text, "en-US-GuyNeural").stream() generates MP3 chunks
+      - StreamingResponse returns MP3 binary
+  12. main.js creates Blob URL from MP3, plays via hidden <audio> element.
+  13. UI is unfrozen, input is re-enabled and focused.
+
+
+================================================================================
+18. HOW MOCK MODE WORKS
+================================================================================
+
+When DTS_MOCK_MODE=True (the default for development):
+
+  - No HTTP calls are made to the DTS API
+  - MOCK_DOCUMENTS is loaded at startup from documents.json (if present) plus built-in samples
+  - get_document(pdid) simply does a dictionary lookup against MOCK_DOCUMENTS
+  - Built-in PDIDs 001, 002, 003 are always available:
+      001: Leave Application — Juan Dela Cruz, In Progress at City Mayor's Office
+      002: Purchase Request — office supplies, Completed at City Budget Office
+      003: Travel Order — Pedro Reyes, In Progress at City Administrator's Office
+  - documents.json can contain a real DTS API response; it will be parsed and added to the mock
+
+This allows full development and testing without needing the real DTS infrastructure running.
+
+
+================================================================================
+19. HOW LIVE MODE WORKS
+================================================================================
+
+When DTS_MOCK_MODE=False:
+
+  1. Set in .env: DTS_MOCK_MODE=false and DTS_API_BASE_URL=http://your-dts-server:port
+  2. get_document(pdid) builds the URL: {DTS_API_BASE_URL}/api/documents/{pdid_clean}
+  3. httpx.AsyncClient makes an async GET request with a 10-second timeout
+  4. The raw JSON response is passed through parse_dts_document() to flatten it
+  5. The parsed result is cached in _document_cache for 60 seconds
+  6. 404 responses (document not found) are also cached to prevent redundant not-found calls
+  7. HTTP errors return None (handled as "document not found" by the response generator)
+
+
+================================================================================
+20. MODEL TRAINING — HOW IT WORKS
+================================================================================
+
+The intent classifier can be trained in three ways:
+
+WAY 1 — AUTOMATIC STARTUP TRAINING:
+  If no model file exists at ml_models/intent_model.joblib but ml_data/intent_training.csv
+  exists, the classifier is trained automatically when the server starts. This zero-config
+  behavior means you can deploy to a new server and the model will train itself on first boot.
+
+WAY 2 — MANUAL CLI TRAINING:
+  Run: python scripts/train.py
+  This reads the CSV, trains the model, and saves it. Useful during development to retrain
+  without starting the full server.
+
+WAY 3 — API-TRIGGERED RETRAINING:
+  POST /api/train {"source": "csv"} or {"source": "database"}
+  This allows retraining at runtime without restarting the server. After training, the new
+  model is immediately active for all subsequent requests. Useful for adding new intents to
+  production without downtime.
+
+TRAINING DATA FORMAT (ml_data/intent_training.csv):
+  A CSV with two columns: "text" and "intent"
+  Example rows:
+    "What is the status of my document?",document_status
+    "Check PDID 100",document_status
+    "Hello",greeting
+    "Thank you",thanks
+
+To add a new intent:
+  1. Add training examples to the CSV (at least 10-20 per intent for good accuracy)
+  2. Call POST /api/train {"source": "csv"}
+  3. The new intent is immediately available
+
+
+================================================================================
+21. MULTI-TURN CONVERSATION — HOW CONTEXT IS MAINTAINED
+================================================================================
+
+Every client receives a session_id on their first request. The client must pass this session_id
+back in subsequent requests to maintain context within the same conversation.
+
+EXAMPLE MULTI-TURN SESSION:
+
+  Turn 1: User says "What is the status of my document?"
+    → Intent: document_status
+    → No PDID in message
+    → Response: "What is the Tracking No. of your document?"
+    → Session context saved: {pending_intent: "document_status"}
+    → session_id "abc-123" returned to client
+
+  Turn 2: User says "001" (with session_id: "abc-123")
+    → Session loaded from DB, context: {pending_intent: "document_status"}
+    → Intent detected: "unknown" (just a number doesn't clearly map to an intent)
+    → Entity extracted: pdid = "001"
+    → pending_intent "document_status" IS set → intent overridden to "follow_up"
+    → pending_intent cleared in context
+    → Document 001 looked up → full status returned
+    → Session context saved: {pending_intent: null, last_pdid: "001"}
+
+  Turn 3: User says "Who is currently holding it?" (with session_id: "abc-123")
+    → Session loaded, context: {last_pdid: "001"}
+    → Intent: document_status
+    → No PDID in message, BUT last_pdid = "001" exists in context
+    → entities["pdid"] = "001" injected from context
+    → Document 001 looked up again → reply includes current holder info
+
+This creates a natural, flowing conversation without the user having to repeat the PDID
+in every message.
+
+TOPIC ROUTING AND RAG CONTEXT:
+If the user selects a specific topic ("docs" or "lgu") in the frontend, the conversational
+engine strictly enforces intents.
+  - "docs" prevents fallback to general LGU/RAG queries, treating ambiguities as tracking numbers.
+  - "lgu" forces the intent to "lgu_query", utilizing the RAG service and skipping tracking number checks.
+Moreover, when the RAG index returns context for a query, the pending "document_status" state is cleared.
+This lets users seamlessly pivot from asking about their document status to asking a general KB question 
+("How about a business permit?") without the AI stubbornly insisting on a tracking number.
+
+
+================================================================================
+22. ENVIRONMENT VARIABLES & CONFIGURATION
+================================================================================
+
+All settings are in the .env file (copied from .env.example). These are the key variables:
+
+  DATABASE_URL=mysql+pymysql://root:yourpassword@localhost:3306/dts_ai_engine
+    Full connection string for MySQL. Change "root" and "yourpassword" to actual credentials.
+
+  DTS_API_BASE_URL=http://192.168.168.54:8000
+    Base URL of the real DTS API server. Only used when DTS_MOCK_MODE=false.
+
+  DTS_MOCK_MODE=true
+    Set to "false" when connecting to the real DTS API.
+
+  CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+    Comma-separated list of allowed frontend origins. Add your production frontend URL here.
+
+  CONFIDENCE_THRESHOLD=0.4
+    Minimum classification confidence to accept. Lower values = more permissive classification.
+    Higher values = stricter, more "unknown" responses for ambiguous inputs.
+
+
+================================================================================
+23. PRODUCTION DEPLOYMENT CONSIDERATIONS
+================================================================================
+
+MULTIPLE WORKERS:
+  Replace --reload with --workers for production:
+    uvicorn app.main:app --workers 4 --host 0.0.0.0 --port 8000
+  Use 2 × CPU_cores + 1 as the worker count. --reload only works with 1 process.
+
+DATABASE CONNECTION POOL:
+  Increase pool_size and max_overflow in app/db/database.py to handle concurrent workers:
+    pool_size=10, max_overflow=20
+
+DTS RESPONSE CACHE:
+  The _document_cache (TTL 60 seconds) is per-process. With 4 workers, each maintains
+  its own cache. For shared caching across workers, Redis would need to be added.
+
+RATE LIMITER STORAGE:
+  By default, slowapi uses in-memory storage per worker. With multiple workers, rate limits
+  are also per-process. For shared rate limiting, configure slowapi to use Redis storage.
+
+SECURITY:
+  - Set CORS_ORIGINS to only your production frontend domain
+  - Use a strong, random database password
+  - Run behind a reverse proxy (nginx) for TLS/HTTPS
+
+
+================================================================================
+24. PROJECT DIRECTORY STRUCTURE
+================================================================================
+
+DTS_AI/                               Root project folder
+├── .env                              Environment variables (not committed to git)
+├── .env.example                      Template for .env (committed as reference)
+├── .gitignore                        Git ignore rules (excludes .env, venv, __pycache__)
+├── README.md                         Quick start and API reference documentation
+├── TRAINING_GUIDE.md                 Guide for adding training data and retraining
+├── requirements.txt                  Python package dependencies
+├── schema.sql                        MySQL DDL for manual database setup
+├── documents.json                    Optional: real DTS API response for mock mode
+│
+├── app/                              Main Python application package
+│   ├── __init__.py
+│   ├── main.py                       FastAPI app, lifespan (startup/shutdown), middleware
+│   ├── config.py                     Pydantic settings — env var loading
+│   ├── rate_limiter.py               Shared slowapi Limiter instance
+│   │
+│   ├── api/
+│   │   └── routes.py                 All REST endpoints (chat, train, health, tts)
+│   │
+│   ├── ml/                           Machine learning pipeline
+│   │   ├── preprocessing.py          Text normalization and stopword removal
+│   │   ├── intent_classifier.py      TF-IDF + SGDClassifier pipeline class
+│   │   └── entity_extractor.py       Regex-based PDID extraction
+│   │
+│   ├── services/                     Business logic services
+│   │   ├── conversation.py           Main orchestrator — ties all layers together
+│   │   ├── dts_client.py             DTS API client (mock + live + caching + parser)
+│   │   ├── response_generator.py     Template-based response formatting
+│   │   └── chat_logger.py            Persists messages to chat_logs table
+│   │
+│   ├── db/                           Database layer
+│   │   ├── database.py               SQLAlchemy engine, session factory, get_db dependency
+│   │   └── models.py                 ORM models: Session, ChatLog, TrainingData
+│   │
+│   └── schemas/
+│       └── chat.py                   Pydantic request/response models for all endpoints
+│
+├── ml_data/                          ML training data
+│   └── intent_training.csv           CSV with (text, intent) examples
+│
+├── ml_models/                        Saved trained model files
+│   └── intent_model.joblib           Serialized scikit-learn Pipeline (auto-generated)
+│
+├── scripts/
+│   └── train.py                      CLI script to train the model from CSV
+│
+├── tests/                            Automated test suite
+│   └── ...
+│
+└── web-app/                          Browser chat client
+    ├── index.html                    App shell — chat layout and structure
+    ├── main.js                       All client logic (chat, TTS, session, animations)
+    ├── style.css                     Dark theme, glassmorphism, bubble styles, animations
+    ├── vite.config.js                Vite config with /api proxy to backend
+    └── package.json                  Node.js project manifest (vite dev dependency)
+
+================================================================================
+END OF SYSTEM DOCUMENTATION
+================================================================================

@@ -1,0 +1,58 @@
+# AI Engine — .dockerignore
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Trained models & data — stored in named Docker volumes, not baked into image
+ml_models/
+rag_store/
+
+# Test files
+tests/
+test_*.py
+*.test.py
+pytest.ini
+.pytest_cache/
+
+# Profiling / coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Git
+.git/
+.gitignore
+
+# Env files — injected at runtime via docker-compose
+.env
+.env.*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docs
+*.md
+docs/
+"system doc"
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker itself
+Dockerfile
+.dockerignore

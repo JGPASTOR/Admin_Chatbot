@@ -1,0 +1,21 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pymysql
+pydantic-settings
+scikit-learn
+joblib
+httpx
+python-dotenv
+pytest
+pytest-asyncio
+langdetect
+deep-translator
+slowapi
+cachetools
+# TTS
+edge-tts
+# RAG dependencies
+python-docx
+sentence-transformers
+numpy

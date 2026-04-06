@@ -1,0 +1,145 @@
+
+# ══════════════════════════════════════════════════════════════════════
+#  DTS Chatbot — Docker Compose
+#
+#  Services managed by Docker:
+#    admin       :3005  — Next.js admin panel
+#    ai_engine   :8000  — FastAPI chatbot engine
+#    llm         :8001  — Shared LLM gateway → Ollama (external LAN)
+#    db          :3308  — MySQL 8
+#
+#  Services already running on LOCAL SERVER 192.168.160.118 (not containerised):
+#    ✅ Nginx   — routes traffic externally (proxy_pass to ports below)
+#    ✅ Redis   — accessed at 192.168.160.118:6379
+#    ✅ Ollama  — running at 192.168.160.118:11434
+#
+#  One command to start everything:
+#    docker compose up --build -d
+#    run project: docker compose up -d
+# ══════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ── Admin Panel (Next.js) ─────────────────────────────────────────
+  admin:
+    build:
+      context: ./adminDB
+      dockerfile: Dockerfile
+    container_name: dts_admin
+    restart: unless-stopped
+    ports:
+      # Nginx on your local server should proxy_pass to this port
+      - "3005:3005"
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_USER=dts_user
+      - DB_PASSWORD=dts_pass
+      - DB_NAME=documenttracker
+      - AI_ENGINE_URL=http://ai_engine:8000
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - dts_net
+
+  # ── AI Engine (FastAPI) ───────────────────────────────────────────
+  ai_engine:
+    build:
+      context: ./AI-Engine
+      dockerfile: Dockerfile
+    container_name: dts_ai_engine
+    restart: unless-stopped
+    ports:
+      # Nginx on your local server should proxy_pass to this port
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=mysql+pymysql://dts_user:dts_pass@db:3306/documenttracker
+      - DTS_API_BASE_URL=http://admin:3005
+      - DTS_MOCK_MODE=false
+      - CORS_ORIGINS=http://localhost,http://localhost:3005
+      - HOST=0.0.0.0
+      - PORT=8000
+      - USE_LLM=true
+      - LLM_SERVICE_URL=http://llm:8001
+      - USE_RAG=true
+      - RAG_DOCUMENT_API_URL=http://admin:3005/api/general-documents
+      - CONFIDENCE_THRESHOLD=0.4
+      - RAG_TOP_K=3
+    volumes:
+      # Persist trained ML models and RAG index between restarts
+      - ai_ml_models:/app/ml_models
+      - ai_rag_store:/app/rag_store
+      - ai_ml_data:/app/ml_data
+    depends_on:
+      db:
+        condition: service_healthy
+      llm:
+        condition: service_started
+    networks:
+      - dts_net
+
+  # ── LLM Gateway (FastAPI → Ollama) ───────────────────────────────
+  llm:
+    build:
+      context: ./LLM
+      dockerfile: Dockerfile
+    container_name: dts_llm
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      # Ollama — same local server as Nginx/Redis
+      - OLLAMA_BASE_URL=http://192.168.160.42:11434
+      - OLLAMA_MODEL=llama3
+      - OLLAMA_TIMEOUT=60
+      # Redis — running on the local server at 192.168.160.118
+      - REDIS_URL=redis://192.168.160.42:6379/0
+      - CACHE_TTL=3600
+      - CACHE_ENABLED=true
+      - HOST=0.0.0.0
+      - PORT=8001
+    extra_hosts:
+      # Allow containers to reach the LAN server directly
+      - "local-server:192.168.160.42"
+    networks:
+      - dts_net
+
+  # ── MySQL 8 Database ──────────────────────────────────────────────
+  db:
+    image: mysql:8.0
+    container_name: dts_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root_secret
+      MYSQL_DATABASE: documenttracker
+      MYSQL_USER: dts_user
+      MYSQL_PASSWORD: dts_pass
+    ports:
+      # Ports 3306 & 3307 used by WAMP — using 3308 on the host
+      - "3308:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+      # Auto-run schema files on first boot
+      - ./adminDB/schema.sql:/docker-entrypoint-initdb.d/01_admin_schema.sql:ro
+      - ./AI-Engine/schema.sql:/docker-entrypoint-initdb.d/02_ai_engine_schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "dts_user", "-pdts_pass"]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - dts_net
+
+# ── Named Volumes ──────────────────────────────────────────────────
+volumes:
+  db_data:
+  ai_ml_models:
+  ai_rag_store:
+  ai_ml_data:
+
+# ── Internal Network ───────────────────────────────────────────────
+networks:
+  dts_net:
+    driver: bridge

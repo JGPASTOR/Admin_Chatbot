@@ -1,0 +1,391 @@
+text,intent
+What is the status of my document?,document_status
+Where is my document?,document_status
+Can you check my document status?,document_status
+I want to know the status of my document,document_status
+Track my document,document_status
+Where is PDID 001?,document_status
+What happened to PDID 002?,document_status
+Check PDID-003 status,document_status
+Status of my document PDID 005,document_status
+Is my document approved?,document_status
+Has my document been processed?,document_status
+What department is my document in?,document_status
+Where is my document right now?,document_status
+Can you look up my document?,document_status
+I need to check on my document,document_status
+Track my document please,document_status
+Find my document status,document_status
+Document tracking,document_status
+Any update on my document?,document_status
+Is there any progress on my document?,document_status
+Has my document been signed?,document_status
+Is my document still pending?,document_status
+Where did my paper go?,document_status
+I want to follow up on my document,document_status
+May I know the status of my request?,document_status
+Can I check where my document is now?,document_status
+Nasaan na yung document ko?,document_status
+Ano na status ng document ko?,document_status
+What office is my document in?,document_status
+Who is currently holding my document?,document_status
+Paki check yung document ko,document_status
+Saan na napunta yung papel ko?,document_status
+Nasan na yung request ko?,document_status
+May balita na ba sa document ko?,document_status
+Tsek naman kung nasan na yung document ko,document_status
+Ano na nangyari sa papel ko?,document_status
+Paki track naman yung document ko,document_status
+Pa check po ng status ng document ko,document_status
+Check ko lang yung status,document_status
+Anong status na ng papel?,document_status
+Na approve na ba yung document ko?,document_status
+Na process na ba yung request ko?,document_status
+Pa check naman ng PDID 100,document_status
+Saan na yung PDID 050?,document_status
+Nasan na PDID 003?,document_status
+San na napunta document ko,document_status
+Where's my document at?,document_status
+Wheres my document,document_status
+Wer na yung papel ko?,document_status
+I submitted a document where is it now?,document_status
+What is happening with my document?,document_status
+Can you tell me where my document is?,document_status
+My document where is it?,document_status
+Check document status,document_status
+I want to check my paper,document_status
+Has anyone signed my document?,document_status
+Is my request still being processed?,document_status
+What office has my document?,document_status
+Who has my document right now?,document_status
+Sino may hawak ng document ko?,document_status
+Sino nag hohold ng papel ko?,document_status
+Saang office na yung document ko?,document_status
+Kanino na napunta yung papel ko?,document_status
+Check naman PDID 007,document_status
+I want to know if my document was already signed,document_status
+Has there been any movement on my document?,document_status
+Any news on my submitted document?,document_status
+Where is my request right now?,document_status
+My PDID is 001 can you check it?,document_status
+Pa check document PDID-005,document_status
+Track PDID 010 please,document_status
+Look up my document for me,document_status
+Pwd po ba mag check ng status?,document_status
+Pa follow up ng document ko,document_status
+Kelan pa nag move yung document ko?,document_status
+Is my document done?,document_status
+Tapos na ba yung document ko?,document_status
+Did my document reach the mayor's office?,document_status
+Nakarating na ba sa mayor yung papel ko?,document_status
+PDID 001,follow_up
+PDID-002,follow_up
+PDID 003,follow_up
+001,follow_up
+002,follow_up
+1,follow_up
+2,follow_up
+3,follow_up
+It is PDID 004,follow_up
+My PDID is 005,follow_up
+The document ID is PDID 006,follow_up
+PDID-007,follow_up
+Here is my PDID 010,follow_up
+Its PDID 011,follow_up
+The PDID is 012,follow_up
+PDID 1000,follow_up
+My document number is 100,follow_up
+The number is PDID 050,follow_up
+Its 003,follow_up
+PDID number 015,follow_up
+That would be PDID 020,follow_up
+The tracking number is 055,follow_up
+Here it is PDID 032,follow_up
+It's PDID-044,follow_up
+Yung PDID ko is 008,follow_up
+PDID ko po ay 009,follow_up
+Eto yung number ko 025,follow_up
+050 po,follow_up
+PDID 100 po,follow_up
+My tracking number is PDID 060,follow_up
+The ID is 070,follow_up
+Here's my PDID 088,follow_up
+PDID number is 099,follow_up
+075,follow_up
+500,follow_up
+1500,follow_up
+It's 045,follow_up
+Yun po PDID 033,follow_up
+Eto po PDID-055,follow_up
+Tracking number ko po is 042,follow_up
+My document number is PDID 018,follow_up
+The PDID is 200,follow_up
+PDID 300 po yung sa akin,follow_up
+110,follow_up
+Let me give you the number its 065,follow_up
+Sure its PDID 077,follow_up
+Eto na yung number PDID 091,follow_up
+Number ko po 120,follow_up
+Hello,greeting
+Hi,greeting
+Hey there,greeting
+Good morning,greeting
+Good afternoon,greeting
+Good evening,greeting
+Hi there,greeting
+Hello there,greeting
+Greetings,greeting
+Kamusta,greeting
+Hoy,greeting
+Magandang umaga,greeting
+Magandang hapon,greeting
+Magandang gabi,greeting
+Hey,greeting
+Yo,greeting
+Musta,greeting
+Sup,greeting
+Kumusta ka?,greeting
+Uy hello,greeting
+Hello po,greeting
+Hi po,greeting
+Magandang umaga po,greeting
+Magandang hapon po,greeting
+Magandang gabi po,greeting
+Uy kamusta,greeting
+Good day,greeting
+What's up,greeting
+Hallo,greeting
+Hellow,greeting
+Hai,greeting
+Musta na,greeting
+Kumusta po,greeting
+Uy,greeting
+Good morning po,greeting
+Good afternoon po,greeting
+Good evening po,greeting
+Whats up,greeting
+Howdy,greeting
+Heya,greeting
+Hey hey,greeting
+Hi hi,greeting
+Hello hello,greeting
+Hola,greeting
+Kamustahan,greeting
+How do I submit a document?,help
+How does this system work?,help
+What can you do?,help
+Help me,help
+What are your features?,help
+How do I use this?,help
+Can you help me?,help
+What services do you offer?,help
+How to track a document?,help
+Guide me,help
+I need assistance,help
+What is a PDID?,help
+How do I find my PDID number?,help
+Where can I get my document ID?,help
+Paano gamitin to?,help
+How do I check my document?,help
+What is this chatbot for?,help
+Paano mag track ng document?,help
+Paano ko malalaman yung PDID ko?,help
+Ano yung PDID?,help
+Paano gamitin yung system?,help
+What does this bot do?,help
+How do I use the document tracker?,help
+Can you explain how this works?,help
+I don't know how to use this,help
+Teach me how to use this,help
+Turuan mo ko paano gamitin to,help
+Pano ba to gamitin?,help
+Help,help
+What should I type?,help
+Ano dapat i-type ko?,help
+How do I start?,help
+Pano mag simula?,help
+Instructions please,help
+Give me instructions,help
+Can you guide me?,help
+Ano pwede mong gawin?,help
+Anong magagawa mo?,help
+Tell me what you can do,help
+What can I ask you?,help
+Ano pwede kong itanong?,help
+San ko makikita yung PDID?,help
+Where do I find my tracking number?,help
+How to use DTS?,help
+Patulong naman,help
+Di ko alam pano,help
+I want to file a complaint,complaint
+I want to complain,complaint
+This is taking too long,complaint
+My document has been pending for weeks,complaint
+Why is my document taking so long?,complaint
+I am not happy with the service,complaint
+The processing is too slow,complaint
+I want to report a problem,complaint
+This is unacceptable,complaint
+Your service is very slow,complaint
+Nobody is processing my document,complaint
+I have been waiting for months,complaint
+Ang tagal naman ng document ko,complaint
+Bakit ang bagal ng proseso?,complaint
+I need to escalate this issue,complaint
+Ang tagal na naghihintay ako,complaint
+Sobrang bagal ng service nyo,complaint
+Galit na ko ang tagal ng document ko,complaint
+Wala bang gumagalaw sa document ko?,complaint
+Bakit walang nag process?,complaint
+Nakakapagod na mag hintay,complaint
+This is ridiculous how long it takes,complaint
+I've been waiting forever,complaint
+Why hasn't my document moved?,complaint
+My document has not been processed,complaint
+It's been weeks and still no progress,complaint
+Ang tagal tagal na wala pa rin,complaint
+Ang bagal naman po,complaint
+This is so slow,complaint
+I'm frustrated with this service,complaint
+Can someone please process my document?,complaint
+Paano ba yan ang tagal na,complaint
+Why is no one working on my document?,complaint
+Hindi pa rin tapos yung document ko,complaint
+So slow,complaint
+Grabe ang bagal,complaint
+Matagal na process,complaint
+This is very disappointing,complaint
+Ang hirap na maghintay,complaint
+Walang nangyayari sa document ko,complaint
+Why is everything so slow here?,complaint
+I want to speak to someone about my document,complaint
+Ilang araw na eh wala pa rin,complaint
+Ang laki ng problema ng bagal,complaint
+Napaka bagal,complaint
+Tell me a joke,unknown
+What is the weather today?,unknown
+Who is the president?,unknown
+Play some music,unknown
+What time is it?,unknown
+Calculate 2 plus 2,unknown
+Order food for me,unknown
+Send an email,unknown
+What is your name?,unknown
+Do you have feelings?,unknown
+Can you sing a song?,unknown
+What is the meaning of life?,unknown
+Who made you?,unknown
+What's 1 plus 1?,unknown
+Tell me something interesting,unknown
+Who are you?,unknown
+Are you a robot?,unknown
+Can you cook?,unknown
+Play a game with me,unknown
+What day is it today?,unknown
+How old are you?,unknown
+Where are you from?,unknown
+Can you dance?,unknown
+Write a poem,unknown
+Book a flight for me,unknown
+Order pizza,unknown
+What is love?,unknown
+How's the traffic?,unknown
+Can you call someone?,unknown
+Anong ulam natin?,unknown
+Pwede ba mag luto ka?,unknown
+Maglaro tayo,unknown
+Sino ka ba?,unknown
+Robot ka ba?,unknown
+Kumain ka na ba?,unknown
+Ano ba trip mo?,unknown
+Sing me a lullaby,unknown
+Do my homework,unknown
+What color is the sky?,unknown
+Can you read my mind?,unknown
+Predict the future,unknown
+Ano ang magic number?,unknown
+Thank you,thanks
+Thanks,thanks
+Thank you so much,thanks
+Salamat,thanks
+Salamat po,thanks
+Thanks a lot,thanks
+Thank you very much,thanks
+Maraming salamat,thanks
+Salamat sa tulong,thanks
+Thank you for the help,thanks
+Thanks for checking,thanks
+Ty,thanks
+Tnx,thanks
+Salamat po sa info,thanks
+Thank you for the information,thanks
+Appreciate it,thanks
+I appreciate your help,thanks
+Thank you so much for the help,thanks
+Maraming salamat po,thanks
+Tnx po,thanks
+Tysm,thanks
+Thank u,thanks
+Thx,thanks
+Thanks po,thanks
+Goodbye,goodbye
+Bye,goodbye
+See you,goodbye
+Sige bye,goodbye
+Paalam,goodbye
+Bye bye,goodbye
+See you later,goodbye
+Take care,goodbye
+Sige salamat bye,goodbye
+Aalis na ko bye,goodbye
+Okay bye,goodbye
+Ok thanks bye,goodbye
+Goodbye thank you,goodbye
+Bye po,goodbye
+Paalam na po,goodbye
+Sige sige bye,goodbye
+Later,goodbye
+Peace out,goodbye
+Gtg bye,goodbye
+Kbye,goodbye
+
+Ano ba ang ELA?,lgu_query
+What are the priority programs of the city?,lgu_query
+What are the main projects for the city?,lgu_query
+Executive Legislative Agenda,lgu_query
+Tell me about the city goals,lgu_query
+Sino ang mayor?,lgu_query
+Who is the city mayor?,lgu_query
+What are the services provided by the LGU?,lgu_query
+Ano ang mga programa ng syudad?,lgu_query
+What are the achievements of the local government?,lgu_query
+Can you tell me about the government programs?,lgu_query
+Ano ang vision at mission ng Surigao?,lgu_query
+Vision of the city,lgu_query
+Where are the tourist spots here?,tourism_query
+What are the places to visit in Surigao?,tourism_query
+Tourist spots,tourism_query
+Where to eat?,tourism_query
+Mga pwedeng pasyalan sa syudad,tourism_query
+Best tourist attractions,tourism_query
+Is there a festival here?,tourism_query
+Ano pinagdiriwang sa Surigao?,tourism_query
+Where to travel?,tourism_query
+Anong magandang puntahan dito?,tourism_query
+
+What documents does the LGU offer?,lgu_query
+Tell me about LGU documents,lgu_query
+How do I request a document from the city?,lgu_query
+What are the requirements for a business permit?,lgu_query
+Can I ask a general question about LGU services?,lgu_query
+I want to ask about city documents,lgu_query
+Where do I get a birth certificate?,lgu_query
+How to apply for mayor's clearance?,lgu_query
+Tell me something about document requirements,lgu_query
+What papers do I need for my business?,lgu_query
+Can you explain the services offered?,lgu_query
+Tell me about the executive agenda documents,lgu_query
+I need general info about documents,lgu_query
+What are the documents required for marriage license?,lgu_query
+Can you tell me about government papers?,lgu_query
+How does the city process documents?,lgu_query

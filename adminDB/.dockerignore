@@ -1,0 +1,41 @@
+# Admin Panel — .dockerignore
+# (placed in adminDB/ — only what's needed to build the image is sent to Docker)
+
+# Dependencies — reinstalled fresh in the image
+node_modules/
+.pnpm-store/
+
+# Next.js build output (rebuilt inside Docker)
+.next/
+out/
+
+# Dev/test files
+*.test.*
+*.spec.*
+__tests__/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Git
+.git/
+.gitignore
+
+# Env files — injected at runtime via docker-compose
+.env
+.env.*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker itself
+Dockerfile
+.dockerignore
