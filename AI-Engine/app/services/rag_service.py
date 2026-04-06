@@ -380,12 +380,20 @@ def retrieve_context(query: str, top_k: int = 3) -> Optional[str]:
         # 4. Get top-K indices (sorted descending)
         top_indices = np.argsort(similarities)[-top_k:][::-1]
 
-        # 5. Fetch the actual text chunks
-        docs = [chunks_snapshot[i] for i in top_indices]
-        
+        # 5. Filter by minimum similarity threshold to drop irrelevant chunks.
+        # Raw cosine scores sit roughly in [0, 1]; keyword boosts push them higher.
+        # A threshold of 0.30 keeps chunks that are genuinely on-topic while
+        # discarding tangential sections that happen to share surface-level tokens.
+        MIN_SIMILARITY = 0.30
+        docs = [
+            chunks_snapshot[i]
+            for i in top_indices
+            if similarities[i] >= MIN_SIMILARITY
+        ]
+
         if not docs:
             return None
-            
+
         return "\n\n---\n\n".join(docs)
     except Exception as e:
         logger.error(f"[RAG] Retrieval failed: {e}")

@@ -505,16 +505,16 @@ def generate_response(
         return random.choice(_GOODBYE_DEFAULT)
 
     # ── RAG Fallback (LLM is down) ───────────────────────────────────────────
-    # If the LLM is down but we found relevant document chunks,
-    # print the RAG knowledge rather than a generic help/query template.
+    # If the LLM is down but we found relevant document chunks, show only the
+    # single most relevant chunk (first in the list — already ranked by score).
+    # Showing all chunks produces unrelated sections that confuse the user.
     if rag_context:
         prefix = "📋 Here's what I found in our records:\n\n"
         if language == "tl":
             prefix = "📋 Narito ang nahanap ko sa aming mga rekord:\n\n"
 
-        # Split the raw excerpts so it doesn't look like a giant wall of text
-        formatted_chunks = "\n---\n".join([f"> {chunk.strip()}" for chunk in rag_context.split("\n\n---\n\n")])
-        return f"{prefix}{formatted_chunks}"
+        top_chunk = rag_context.split("\n\n---\n\n")[0].strip()
+        return f"{prefix}{top_chunk}"
 
     # ── Help ─────────────────────────────────────────────────────────────────
     if intent == "help":
