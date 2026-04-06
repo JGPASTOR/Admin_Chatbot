@@ -145,9 +145,9 @@ async def _run_pipeline(
     # (like "HOW ABOUT [name]?") also search RAG instead of being treated as PDID replies.
     if rag_context:
         update_session_context(db, session, "pending_intent", None)
-        # Reclassify follow_up to lgu_query when RAG found results.
+        # Reclassify follow_up/help to lgu_query when RAG found results in LGU mode.
         # Do NOT reclassify document_status — explicit tracking requests must ask for PDID.
-        if intent == "follow_up" and "pdid" not in entities and not document:
+        if intent in ("follow_up", "help", "unknown") and "pdid" not in entities and not document and topic == "lgu":
             intent = "lgu_query"
     elif intent == "document_status" and "pdid" not in entities and not document:
         update_session_context(db, session, "pending_intent", "document_status")

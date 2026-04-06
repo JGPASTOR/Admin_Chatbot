@@ -508,10 +508,10 @@ def generate_response(
     # If the LLM is down but we found relevant document chunks,
     # print the RAG knowledge rather than a generic help/query template.
     if rag_context:
-        prefix = "🤖 *I'm currently running in fallback mode as my AI brain is unreachable, but here are some excerpts I found in our records that might answer your question:*\n\n"
+        prefix = "📋 Here's what I found in our records:\n\n"
         if language == "tl":
-            prefix = "🤖 *Kasalukuyan akong tumatakbo sa fallback mode dahil hindi ko maabot ang aking AI brain, pero narito ang ilang excerpts na nahanap ko sa aming records na maaaring sumagot sa iyong katanungan:*\n\n"
-        
+            prefix = "📋 Narito ang nahanap ko sa aming mga rekord:\n\n"
+
         # Split the raw excerpts so it doesn't look like a giant wall of text
         formatted_chunks = "\n---\n".join([f"> {chunk.strip()}" for chunk in rag_context.split("\n\n---\n\n")])
         return f"{prefix}{formatted_chunks}"

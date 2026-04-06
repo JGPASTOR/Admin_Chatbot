@@ -8,7 +8,7 @@
 #    llm         :8001  — Shared LLM gateway → Ollama (external LAN)
 #    db          :3308  — MySQL 8
 #
-#  Services already running on LOCAL SERVER 192.168.160.118 (not containerised):
+#  Services already running on UBUNTU SERVER 192.168.160.118 (not containerised):
 #    ✅ Nginx   — routes traffic externally (proxy_pass to ports below)
 #    ✅ Redis   — accessed at 192.168.160.118:6379
 #    ✅ Ollama  — running at 192.168.160.118:11434
@@ -90,19 +90,19 @@ services:
     ports:
       - "8001:8001"
     environment:
-      # Ollama — same local server as Nginx/Redis
-      - OLLAMA_BASE_URL=http://192.168.160.42:11434
+      # Ollama — Ubuntu server (Nginx/Redis/Ollama)
+      - OLLAMA_BASE_URL=http://192.168.160.118:11434
       - OLLAMA_MODEL=llama3
       - OLLAMA_TIMEOUT=60
-      # Redis — running on the local server at 192.168.160.118
-      - REDIS_URL=redis://192.168.160.42:6379/0
+      # Redis — Ubuntu server
+      - REDIS_URL=redis://192.168.160.118:6379/0
       - CACHE_TTL=3600
       - CACHE_ENABLED=true
       - HOST=0.0.0.0
       - PORT=8001
     extra_hosts:
-      # Allow containers to reach the LAN server directly
-      - "local-server:192.168.160.42"
+      # Allow containers to reach the Ubuntu LAN server directly
+      - "local-server:192.168.160.118"
     networks:
       - dts_net
 
