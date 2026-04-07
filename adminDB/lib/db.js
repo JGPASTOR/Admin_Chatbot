@@ -65,6 +65,17 @@ async function initDb() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
 
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`faq_entries\` (
+                \`id\`         INT            NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                \`question\`   TEXT           NOT NULL,
+                \`answer\`     TEXT           NOT NULL,
+                \`section\`    VARCHAR(100)   DEFAULT NULL,
+                \`created_at\` DATETIME       DEFAULT CURRENT_TIMESTAMP,
+                \`updated_at\` DATETIME       DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
+
         console.log('✅ DB tables ready (documenttracker)');
     } catch (err) {
         console.error('❌ DB init error:', err.message);
