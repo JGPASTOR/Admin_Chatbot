@@ -71,7 +71,9 @@ export default function FAQPage() {
     // Generate-from-document state
     const [docs, setDocs] = useState([]);
     const [selectedDocId, setSelectedDocId] = useState('');
+    const [selectedDocName, setSelectedDocName] = useState('');   // filename for doc grouping
     const [generating, setGenerating] = useState(false);
+    const [usedLLM, setUsedLLM] = useState(false);
     const [proposals, setProposals] = useState([]);
     const [selectedProposals, setSelectedProposals] = useState(new Set());
     const [savingProposals, setSavingProposals] = useState(false);
@@ -239,6 +241,7 @@ export default function FAQPage() {
         setGenerating(true);
         setProposals([]);
         setSelectedProposals(new Set());
+        setUsedLLM(false);
         try {
             const sugRes = await fetch('/api/faq/suggest', {
                 method: 'POST',
@@ -252,6 +255,7 @@ export default function FAQPage() {
                 flash('No sections found in this document. Make sure it has SECTION headers.', true);
             } else {
                 setProposals(sugData.proposals);
+                setUsedLLM(!!sugData.llm);
                 setEditedQuestions({});
                 setSelectedProposals(new Set());
             }
@@ -283,7 +287,15 @@ export default function FAQPage() {
                 const res = await fetch('/api/faq', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ question: q, answer: p.answer, section: p.section }),
+                    body: JSON.stringify({
+                        question: q,
+                        answer: p.answer,
+                        section: p.section,
+                        // Preserve source document so entries appear under the correct
+                        // document folder in the FAQ Browser (not under Manual Entries).
+                        doc_id: selectedDocId ? Number(selectedDocId) : null,
+                        doc_name: selectedDocName || null,
+                    }),
                 });
                 if (res.ok) saved++;
             } catch { /* skip */ }
@@ -311,8 +323,9 @@ export default function FAQPage() {
                         <div style={{ color: 'var(--text-2)', fontSize: 13, lineHeight: 1.6 }}>
                             <strong style={{ color: 'var(--primary)' }}>How this works: </strong>
                             Save exact Q&A pairs to teach the bot precise answers. When a user's question matches a saved entry
-                            (≥72% similarity + exact section number), the bot returns your answer directly.
-                            Use <strong>Generate from Document</strong> to auto-extract all sections at once.
+                            (≥72% similarity), the bot returns your answer directly. Use <strong>Extract from Document</strong> below to
+                            re-extract FAQs from an existing document with AI assistance and save them directly.
+                            For new uploads and bulk review, use the <a href="/ai-training" style={{ color: 'var(--primary)', fontWeight: 600 }}>AI Training Hub</a>.
                         </div>
                     </div>
                 </div>
@@ -321,19 +334,32 @@ export default function FAQPage() {
                 {error && <div style={{ background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: 8, padding: '12px 16px', marginBottom: 16, color: '#dc2626', fontSize: 13 }}>{error}</div>}
                 {success && <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8, padding: '12px 16px', marginBottom: 16, color: '#16a34a', fontSize: 13 }}>{success}</div>}
 
-                {/* ── Generate from Document ── */}
+                {/* ── Extract from Document ── */}
                 <div style={{ ...card, border: '1.5px solid #bfdbfe' }}>
-                    <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, color: 'var(--text)' }}>
-                        Generate from Document
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
+                        <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>
+                            Extract from Document
+                        </div>
+                        <a href="/ai-training" style={{ fontSize: 11, color: 'var(--primary)', fontWeight: 600, textDecoration: 'none', marginTop: 2 }}>
+                            Bulk upload &amp; review → AI Training Hub
+                        </a>
                     </div>
                     <div style={{ color: 'var(--text-2)', fontSize: 12, marginBottom: 14 }}>
-                        Pick an uploaded document — the system extracts <strong>all content</strong> (sections, paragraphs, lists, tables) and proposes FAQ entries. Check the ones you want, edit the question if needed, then save.
+                        Re-extract from an already-uploaded document with <strong>AI assistance</strong> (LLM-powered when the AI Engine is online, rule-based fallback otherwise). Select only the entries you want and save them directly — no pending queue. Use the <a href="/ai-training" style={{ color: 'var(--primary)' }}>AI Training Hub</a> for new document uploads and bulk proposal review.
                     </div>
                     <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                         <select
                             style={{ ...inputStyle, width: 320 }}
                             value={selectedDocId}
-                            onChange={e => { setSelectedDocId(e.target.value); setProposals([]); setSelectedProposals(new Set()); }}
+                            onChange={e => {
+                                const id = e.target.value;
+                                const doc = docs.find(d => String(d.id) === id);
+                                setSelectedDocId(id);
+                                setSelectedDocName(doc?.original_name || '');
+                                setProposals([]);
+                                setSelectedProposals(new Set());
+                                setUsedLLM(false);
+                            }}
                         >
                             <option value="">— Select a document —</option>
                             {docs.map(d => (
@@ -341,15 +367,26 @@ export default function FAQPage() {
                             ))}
                         </select>
                         <button style={btnGreen(generating || !selectedDocId)} onClick={handleGenerate} disabled={generating || !selectedDocId}>
-                            {generating ? 'Extracting content...' : 'Extract All Content'}
+                            {generating ? 'Extracting with AI...' : 'Extract & Propose FAQs'}
                         </button>
                     </div>
 
                     {proposals.length > 0 && (
                         <div style={{ marginTop: 20 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                                <div style={{ fontWeight: 600, fontSize: 13 }}>
-                                    {proposals.length} chunks found — check what you want to save:
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                    <span style={{ fontWeight: 600, fontSize: 13 }}>
+                                        {proposals.length} entries extracted
+                                    </span>
+                                    {usedLLM ? (
+                                        <span style={{ background: '#dbeafe', color: '#1d4ed8', borderRadius: 20, padding: '2px 10px', fontSize: 11, fontWeight: 700 }}>
+                                            🤖 AI-assisted
+                                        </span>
+                                    ) : (
+                                        <span style={{ background: '#f3f4f6', color: '#6b7280', borderRadius: 20, padding: '2px 10px', fontSize: 11, fontWeight: 600 }}>
+                                            📐 Rule-based
+                                        </span>
+                                    )}
                                 </div>
                                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                                     <button style={btnSecondary} onClick={toggleAllProposals}>
@@ -379,11 +416,24 @@ export default function FAQPage() {
                                             style={{ marginTop: 4, flexShrink: 0, accentColor: 'var(--primary)', cursor: 'pointer' }}
                                         />
                                         <div style={{ flex: 1 }}>
-                                            <span style={{
-                                                display: 'inline-block', background: '#dcfce7', color: 'var(--primary)',
-                                                borderRadius: 5, padding: '1px 8px', fontSize: 10, fontWeight: 600,
-                                                textTransform: 'uppercase', marginBottom: 6,
-                                            }}>{p.section}</span>
+                                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+                                                {p.section && (
+                                                    <span style={{
+                                                        background: '#dcfce7', color: 'var(--primary)',
+                                                        borderRadius: 5, padding: '1px 8px', fontSize: 10, fontWeight: 600,
+                                                        textTransform: 'uppercase',
+                                                    }}>{p.section}</span>
+                                                )}
+                                                {p.confidence != null && (() => {
+                                                    const s = p.confidence;
+                                                    const [bg, col] = s >= 8 ? ['#bbf7d0', '#15803d'] : s >= 5 ? ['#fef08a', '#854d0e'] : ['#fecaca', '#991b1b'];
+                                                    return (
+                                                        <span style={{ background: bg, color: col, borderRadius: 4, padding: '1px 7px', fontSize: 10, fontWeight: 700 }}>
+                                                            AI {s}/10
+                                                        </span>
+                                                    );
+                                                })()}
+                                            </div>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
                                                 <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-3)', flexShrink: 0 }}>Q:</span>
                                                 <input
