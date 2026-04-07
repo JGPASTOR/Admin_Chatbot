@@ -59,6 +59,24 @@ export async function GET() {
     }
 }
 
+/* ── DELETE (bulk) ── */
+export async function DELETE(request) {
+    try {
+        const { ids } = await request.json();
+        if (!Array.isArray(ids) || ids.length === 0) {
+            return NextResponse.json({ success: false, error: 'ids array is required.' }, { status: 400 });
+        }
+        const placeholders = ids.map(() => '?').join(',');
+        await pool.query(`DELETE FROM faq_entries WHERE id IN (${placeholders})`, ids);
+        // Notify AI Engine for each deleted id (fire-and-forget)
+        ids.forEach(id => notifyEngine(`/${id}`, 'DELETE'));
+        return NextResponse.json({ success: true, deleted: ids.length });
+    } catch (err) {
+        console.error('[FAQ DELETE bulk]', err);
+        return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+    }
+}
+
 /* ── POST ── */
 export async function POST(request) {
     try {

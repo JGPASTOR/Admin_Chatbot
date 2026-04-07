@@ -61,11 +61,12 @@ export default function FAQPage() {
     const [answer, setAnswer] = useState('');
     const [section, setSection] = useState('');
 
-    // Edit state
-    const [editId, setEditId] = useState(null);
-    const [editQuestion, setEditQuestion] = useState('');
-    const [editAnswer, setEditAnswer] = useState('');
-    const [editSection, setEditSection] = useState('');
+    // Multi-edit: Map of id → { question, answer, section }
+    const [editData, setEditData] = useState({});
+
+    // Multi-select
+    const [selectedIds, setSelectedIds] = useState(new Set());
+    const [bulkDeleting, setBulkDeleting] = useState(false);
 
     // Generate-from-document state
     const [docs, setDocs] = useState([]);
@@ -118,30 +119,62 @@ export default function FAQPage() {
         finally { setSaving(false); }
     };
 
-    // ── Edit ──
+    // ── Multi-edit helpers ──
     const startEdit = (entry) => {
-        setEditId(entry.id);
-        setEditQuestion(entry.question);
-        setEditAnswer(entry.answer);
-        setEditSection(entry.section || '');
+        setEditData(prev => ({
+            ...prev,
+            [entry.id]: { question: entry.question, answer: entry.answer, section: entry.section || '' },
+        }));
+    };
+
+    const cancelEdit = (id) => {
+        setEditData(prev => { const next = { ...prev }; delete next[id]; return next; });
+    };
+
+    const updateField = (id, field, value) => {
+        setEditData(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
     };
 
     const handleUpdate = async (id) => {
-        if (!editQuestion.trim() || !editAnswer.trim()) return flash('Question and Answer are required.', true);
+        const d = editData[id];
+        if (!d?.question?.trim() || !d?.answer?.trim()) return flash('Question and Answer are required.', true);
         setSaving(true);
         try {
             const res = await fetch(`/api/faq/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ question: editQuestion.trim(), answer: editAnswer.trim(), section: editSection.trim() || null }),
+                body: JSON.stringify({ question: d.question.trim(), answer: d.answer.trim(), section: d.section?.trim() || null }),
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || data.error || 'Failed to update.');
             flash('FAQ entry updated.');
-            setEditId(null);
+            cancelEdit(id);
             loadEntries();
         } catch (err) { flash(err.message, true); }
         finally { setSaving(false); }
+    };
+
+    // Save all open edits at once
+    const handleSaveAll = async () => {
+        const ids = Object.keys(editData);
+        if (ids.length === 0) return;
+        setSaving(true);
+        let savedCount = 0;
+        for (const id of ids) {
+            const d = editData[id];
+            if (!d?.question?.trim() || !d?.answer?.trim()) continue;
+            try {
+                const res = await fetch(`/api/faq/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question: d.question.trim(), answer: d.answer.trim(), section: d.section?.trim() || null }),
+                });
+                if (res.ok) { savedCount++; cancelEdit(Number(id)); }
+            } catch { /* skip */ }
+        }
+        flash(`${savedCount} entry${savedCount !== 1 ? 's' : ''} updated.`);
+        loadEntries();
+        setSaving(false);
     };
 
     const handleDelete = async (id) => {
@@ -151,8 +184,53 @@ export default function FAQPage() {
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || data.error || 'Failed to delete.');
             flash('FAQ entry deleted.');
+            cancelEdit(id);
+            setSelectedIds(prev => { const n = new Set(prev); n.delete(id); return n; });
             loadEntries();
         } catch (err) { flash(err.message, true); }
+    };
+
+    // ── Multi-select ──
+    const toggleSelect = (id) => {
+        setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+    };
+
+    const toggleSelectAll = () => {
+        if (selectedIds.size === entries.length) setSelectedIds(new Set());
+        else setSelectedIds(new Set(entries.map(e => e.id)));
+    };
+
+    const openAllEdits = () => {
+        const next = {};
+        entries.forEach(e => { next[e.id] = { question: e.question, answer: e.answer, section: e.section || '' }; });
+        setEditData(next);
+    };
+
+    const closeAllEdits = () => setEditData({});
+
+    // ── Bulk delete selected ──
+    const handleBulkDelete = async () => {
+        if (selectedIds.size === 0) return;
+        if (!confirm(`Delete ${selectedIds.size} selected FAQ entr${selectedIds.size !== 1 ? 'ies' : 'y'}? This cannot be undone.`)) return;
+        setBulkDeleting(true);
+        try {
+            const res = await fetch('/api/faq', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids: [...selectedIds] }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Bulk delete failed.');
+            flash(`${data.deleted} entr${data.deleted !== 1 ? 'ies' : 'y'} deleted.`);
+            setSelectedIds(new Set());
+            setEditData(prev => {
+                const next = { ...prev };
+                selectedIds.forEach(id => delete next[id]);
+                return next;
+            });
+            loadEntries();
+        } catch (err) { flash(err.message, true); }
+        finally { setBulkDeleting(false); }
     };
 
     // ── Generate from document ──
@@ -175,7 +253,6 @@ export default function FAQPage() {
             } else {
                 setProposals(sugData.proposals);
                 setEditedQuestions({});
-                // Select none by default — admin reviews and picks
                 setSelectedProposals(new Set());
             }
         } catch (err) { flash(err.message, true); }
@@ -202,11 +279,11 @@ export default function FAQPage() {
         let saved = 0;
         for (const p of toSave) {
             try {
-                const question = editedQuestions[p.index] ?? p.question;
+                const q = editedQuestions[p.index] ?? p.question;
                 const res = await fetch('/api/faq', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ question, answer: p.answer, section: p.section }),
+                    body: JSON.stringify({ question: q, answer: p.answer, section: p.section }),
                 });
                 if (res.ok) saved++;
             } catch { /* skip */ }
@@ -218,6 +295,9 @@ export default function FAQPage() {
         loadEntries();
         setSavingProposals(false);
     };
+
+    const openEditCount = Object.keys(editData).length;
+    const allEditsOpen = entries.length > 0 && openEditCount === entries.length;
 
     return (
         <div style={{ marginLeft: 'var(--sidebar-w)', minHeight: '100vh', background: 'var(--bg)' }}>
@@ -265,7 +345,6 @@ export default function FAQPage() {
                         </button>
                     </div>
 
-                    {/* Proposals list */}
                     {proposals.length > 0 && (
                         <div style={{ marginTop: 20 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
@@ -300,14 +379,11 @@ export default function FAQPage() {
                                             style={{ marginTop: 4, flexShrink: 0, accentColor: 'var(--primary)', cursor: 'pointer' }}
                                         />
                                         <div style={{ flex: 1 }}>
-                                            {/* Label */}
                                             <span style={{
                                                 display: 'inline-block', background: '#dcfce7', color: 'var(--primary)',
                                                 borderRadius: 5, padding: '1px 8px', fontSize: 10, fontWeight: 600,
                                                 textTransform: 'uppercase', marginBottom: 6,
                                             }}>{p.section}</span>
-
-                                            {/* Editable question */}
                                             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
                                                 <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-3)', flexShrink: 0 }}>Q:</span>
                                                 <input
@@ -317,8 +393,6 @@ export default function FAQPage() {
                                                     onClick={e => e.stopPropagation()}
                                                 />
                                             </div>
-
-                                            {/* Answer preview */}
                                             <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5 }}>
                                                 {p.preview}
                                             </div>
@@ -366,11 +440,81 @@ export default function FAQPage() {
                     </form>
                 </div>
 
-                {/* ── Saved entries ── */}
-                <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 12, color: 'var(--text)', marginTop: 8 }}>
-                    Saved Entries ({entries.length})
+                {/* ── Saved entries header ── */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, marginTop: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        {entries.length > 0 && (
+                            <input
+                                type="checkbox"
+                                checked={selectedIds.size === entries.length && entries.length > 0}
+                                ref={el => { if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < entries.length; }}
+                                onChange={toggleSelectAll}
+                                style={{ accentColor: 'var(--primary)', cursor: 'pointer', width: 15, height: 15 }}
+                            />
+                        )}
+                        <span style={{ fontWeight: 600, fontSize: 15, color: 'var(--text)' }}>
+                            Saved Entries ({entries.length})
+                        </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        {openEditCount > 0 && (
+                            <button
+                                style={btnSave}
+                                onClick={handleSaveAll}
+                                disabled={saving}
+                            >
+                                {saving ? 'Saving...' : `Save All Edits (${openEditCount})`}
+                            </button>
+                        )}
+                        {entries.length > 0 && (
+                            <button
+                                style={btnSecondary}
+                                onClick={allEditsOpen ? closeAllEdits : openAllEdits}
+                            >
+                                {allEditsOpen ? 'Close All Edits' : 'Edit All'}
+                            </button>
+                        )}
+                    </div>
                 </div>
 
+                {/* Bulk action bar */}
+                {selectedIds.size > 0 && (
+                    <div style={{
+                        background: '#fef9c3', border: '1px solid #fde047', borderRadius: 8,
+                        padding: '10px 16px', marginBottom: 12,
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: '#854d0e' }}>
+                            {selectedIds.size} entr{selectedIds.size !== 1 ? 'ies' : 'y'} selected
+                        </span>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                            <button
+                                style={{ ...btnSecondary, fontSize: 12 }}
+                                onClick={() => {
+                                    const next = {};
+                                    entries.filter(e => selectedIds.has(e.id)).forEach(e => {
+                                        next[e.id] = { question: e.question, answer: e.answer, section: e.section || '' };
+                                    });
+                                    setEditData(prev => ({ ...prev, ...next }));
+                                }}
+                            >
+                                Edit Selected
+                            </button>
+                            <button
+                                style={{ ...btnDanger, fontSize: 12, opacity: bulkDeleting ? 0.6 : 1, cursor: bulkDeleting ? 'not-allowed' : 'pointer' }}
+                                onClick={handleBulkDelete}
+                                disabled={bulkDeleting}
+                            >
+                                {bulkDeleting ? 'Deleting...' : `Delete Selected (${selectedIds.size})`}
+                            </button>
+                            <button style={{ ...btnSecondary, fontSize: 12 }} onClick={() => setSelectedIds(new Set())}>
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* ── Entry list ── */}
                 {loading ? (
                     <div style={{ color: 'var(--text-3)', fontSize: 13, padding: 24, textAlign: 'center' }}>Loading...</div>
                 ) : entries.length === 0 ? (
@@ -379,55 +523,83 @@ export default function FAQPage() {
                         <div>No FAQ entries yet. Generate from a document or add one manually.</div>
                     </div>
                 ) : (
-                    entries.map(entry => (
-                        <div key={entry.id} style={{ ...card, border: editId === entry.id ? '1.5px solid var(--primary-accent)' : '1px solid var(--border)', padding: 20 }}>
-                            {editId === entry.id ? (
-                                <div>
-                                    <div style={{ marginBottom: 10 }}>
-                                        <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-3)', marginBottom: 4, textTransform: 'uppercase' }}>Section</label>
-                                        <input style={{ ...inputStyle, width: 260 }} value={editSection} onChange={e => setEditSection(e.target.value)} placeholder="Section / Label" />
-                                    </div>
-                                    <div style={{ marginBottom: 10 }}>
-                                        <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-3)', marginBottom: 4, textTransform: 'uppercase' }}>Question</label>
-                                        <input style={inputStyle} value={editQuestion} onChange={e => setEditQuestion(e.target.value)} />
-                                    </div>
-                                    <div style={{ marginBottom: 14 }}>
-                                        <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-3)', marginBottom: 4, textTransform: 'uppercase' }}>Answer</label>
-                                        <textarea style={{ ...inputStyle, minHeight: 100, resize: 'vertical', lineHeight: 1.6 }} value={editAnswer} onChange={e => setEditAnswer(e.target.value)} />
-                                    </div>
-                                    <div style={{ display: 'flex', gap: 8 }}>
-                                        <button style={btnSave} onClick={() => handleUpdate(entry.id)} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
-                                        <button style={btnSecondary} onClick={() => setEditId(null)}>Cancel</button>
+                    entries.map(entry => {
+                        const isEditing = Boolean(editData[entry.id]);
+                        const isSelected = selectedIds.has(entry.id);
+                        const d = editData[entry.id] || {};
+
+                        return (
+                            <div key={entry.id} style={{
+                                ...card,
+                                border: isEditing
+                                    ? '1.5px solid var(--primary-accent)'
+                                    : isSelected
+                                        ? '1.5px solid #fde047'
+                                        : '1px solid var(--border)',
+                                padding: 20,
+                                background: isSelected && !isEditing ? '#fefce8' : 'var(--surface)',
+                            }}>
+                                <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                                    {/* Checkbox */}
+                                    <input
+                                        type="checkbox"
+                                        checked={isSelected}
+                                        onChange={() => toggleSelect(entry.id)}
+                                        style={{ marginTop: 4, flexShrink: 0, accentColor: 'var(--primary)', cursor: 'pointer', width: 15, height: 15 }}
+                                    />
+
+                                    <div style={{ flex: 1 }}>
+                                        {isEditing ? (
+                                            <div>
+                                                <div style={{ marginBottom: 10 }}>
+                                                    <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-3)', marginBottom: 4, textTransform: 'uppercase' }}>Section</label>
+                                                    <input style={{ ...inputStyle, width: 260 }} value={d.section} onChange={e => updateField(entry.id, 'section', e.target.value)} placeholder="Section / Label" />
+                                                </div>
+                                                <div style={{ marginBottom: 10 }}>
+                                                    <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-3)', marginBottom: 4, textTransform: 'uppercase' }}>Question</label>
+                                                    <input style={inputStyle} value={d.question} onChange={e => updateField(entry.id, 'question', e.target.value)} />
+                                                </div>
+                                                <div style={{ marginBottom: 14 }}>
+                                                    <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-3)', marginBottom: 4, textTransform: 'uppercase' }}>Answer</label>
+                                                    <textarea style={{ ...inputStyle, minHeight: 100, resize: 'vertical', lineHeight: 1.6 }} value={d.answer} onChange={e => updateField(entry.id, 'answer', e.target.value)} />
+                                                </div>
+                                                <div style={{ display: 'flex', gap: 8 }}>
+                                                    <button style={btnSave} onClick={() => handleUpdate(entry.id)} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
+                                                    <button style={btnSecondary} onClick={() => cancelEdit(entry.id)}>Cancel</button>
+                                                    <button style={btnDanger} onClick={() => handleDelete(entry.id)}>Delete</button>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+                                                    <div style={{ flex: 1 }}>
+                                                        {entry.section && (
+                                                            <span style={{ display: 'inline-block', background: '#dcfce7', color: 'var(--primary)', borderRadius: 6, padding: '2px 8px', fontSize: 11, fontWeight: 600, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                                                                {entry.section}
+                                                            </span>
+                                                        )}
+                                                        <div style={{ fontWeight: 600, color: 'var(--text)', marginBottom: 8, fontSize: 14 }}>
+                                                            Q: {entry.question}
+                                                        </div>
+                                                        <div style={{ color: 'var(--text-2)', fontSize: 13, lineHeight: 1.65, background: 'var(--surface-2)', borderRadius: 8, padding: '10px 14px', whiteSpace: 'pre-wrap' }}>
+                                                            {entry.answer}
+                                                        </div>
+                                                    </div>
+                                                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                                                        <button style={btnSecondary} onClick={() => startEdit(entry)}>Edit</button>
+                                                        <button style={btnDanger} onClick={() => handleDelete(entry.id)}>Delete</button>
+                                                    </div>
+                                                </div>
+                                                <div style={{ marginTop: 10, color: 'var(--text-3)', fontSize: 11 }}>
+                                                    ID #{entry.id} · Added {formatDate(entry.created_at)}
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
-                            ) : (
-                                <div>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-                                        <div style={{ flex: 1 }}>
-                                            {entry.section && (
-                                                <span style={{ display: 'inline-block', background: '#dcfce7', color: 'var(--primary)', borderRadius: 6, padding: '2px 8px', fontSize: 11, fontWeight: 600, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
-                                                    {entry.section}
-                                                </span>
-                                            )}
-                                            <div style={{ fontWeight: 600, color: 'var(--text)', marginBottom: 8, fontSize: 14 }}>
-                                                Q: {entry.question}
-                                            </div>
-                                            <div style={{ color: 'var(--text-2)', fontSize: 13, lineHeight: 1.65, background: 'var(--surface-2)', borderRadius: 8, padding: '10px 14px', whiteSpace: 'pre-wrap' }}>
-                                                {entry.answer}
-                                            </div>
-                                        </div>
-                                        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                                            <button style={btnSecondary} onClick={() => startEdit(entry)}>Edit</button>
-                                            <button style={btnDanger} onClick={() => handleDelete(entry.id)}>Delete</button>
-                                        </div>
-                                    </div>
-                                    <div style={{ marginTop: 10, color: 'var(--text-3)', fontSize: 11 }}>
-                                        ID #{entry.id} · Added {formatDate(entry.created_at)}
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-                    ))
+                            </div>
+                        );
+                    })
                 )}
             </main>
         </div>

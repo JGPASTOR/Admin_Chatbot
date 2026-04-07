@@ -62,7 +62,11 @@ export default function UploadGeneralInfoPage() {
             const res = await fetch('/api/general-documents', { method: 'POST', body: fd });
             const json = await res.json();
             if (json.success) {
-                setUploadProgress(`✅ "${file.name}" uploaded and scanned successfully!`);
+                if (json.rag_warning) {
+                    setUploadProgress(`⚠️ "${file.name}" saved, but AI Engine was offline — click "Resync Knowledge Base" to index it.`);
+                } else {
+                    setUploadProgress(`✅ "${file.name}" uploaded and indexed by AI successfully!`);
+                }
                 load();
             } else {
                 setUploadProgress(`❌ Error: ${json.error}`);
@@ -71,7 +75,7 @@ export default function UploadGeneralInfoPage() {
             setUploadProgress(`❌ Upload failed: ${err.message}`);
         }
         setUploading(false);
-        setTimeout(() => setUploadProgress(''), 4000);
+        setTimeout(() => setUploadProgress(''), 7000);
     };
 
     const handleDelete = async (id, name) => {
@@ -93,7 +97,10 @@ export default function UploadGeneralInfoPage() {
             const res = await fetch('/api/general-documents/rebuild', { method: 'POST' });
             const data = await res.json();
             if (data.success) {
-                setUploadProgress(`✅ Knowledge base successfully synced! (${data.total_chunks} chunks indexed)`);
+                const faqNote = data.faq_pairs_generated > 0
+                    ? `, ${data.faq_pairs_generated} FAQ pairs generated`
+                    : '';
+                setUploadProgress(`✅ Resync done! ${data.total_chunks} chunks indexed${faqNote}.`);
             } else {
                 setUploadProgress(`❌ Sync failed: ${data.error || 'Unknown error'}`);
             }
