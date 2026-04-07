@@ -46,6 +46,17 @@ const navItems = [
         ),
     },
     {
+        href: '/ai-training',
+        label: 'AI TRAINING HUB',
+        icon: (
+            <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path d="M12 2a5 5 0 1 1 0 10A5 5 0 0 1 12 2z" />
+                <path d="M12 12v2m0 4v2M8 16l-1.5 1.5M16 16l1.5 1.5M6 12H4m16 0h-2" />
+                <circle cx="12" cy="7" r="2" fill="currentColor" stroke="none" />
+            </svg>
+        ),
+    },
+    {
         href: '/faq',
         label: 'FAQ / BOT TRAINING',
         icon: (

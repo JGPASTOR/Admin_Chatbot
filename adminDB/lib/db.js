@@ -60,8 +60,27 @@ async function initDb() {
                 \`file_size\`      INT            DEFAULT 0,
                 \`file_path\`      VARCHAR(500)   DEFAULT NULL,
                 \`extracted_data\` JSON           DEFAULT NULL,
+                \`keywords\`       JSON           DEFAULT NULL,
                 \`created_at\`     DATETIME       DEFAULT CURRENT_TIMESTAMP,
                 \`updated_at\`     DATETIME       DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
+
+        // Add keywords column if it doesn't exist yet (for existing installs)
+        try {
+            await conn.query(`ALTER TABLE general_documents ADD COLUMN \`keywords\` JSON DEFAULT NULL`);
+        } catch { /* already exists */ }
+
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`pending_faqs\` (
+                \`id\`         INT            NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                \`doc_id\`     INT            DEFAULT NULL,
+                \`doc_name\`   VARCHAR(255)   DEFAULT NULL,
+                \`section\`    VARCHAR(100)   DEFAULT NULL,
+                \`question\`   TEXT           NOT NULL,
+                \`answer\`     TEXT           NOT NULL,
+                \`status\`     VARCHAR(20)    DEFAULT 'pending',
+                \`created_at\` DATETIME       DEFAULT CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
 

@@ -2,6 +2,56 @@ import pool from '../../../lib/db';
 import { NextResponse } from 'next/server';
 import fs from 'fs/promises';
 import path from 'path';
+import { extractKeywordsFromDoc } from '../../../lib/keywords';
+
+/* ── Auto-FAQ chunk helpers (mirrors faq/suggest logic) ── */
+const CHUNK_SIZE = 500;
+const OVERLAP = 100;
+
+function chunkText(text) {
+    const sectionPattern = /(?=\bSECTION\s+\d+\b)/gi;
+    const sections = text.split(sectionPattern);
+    const chunks = [];
+    for (const section of sections) {
+        const s = section.trim();
+        if (!s) continue;
+        if (s.length <= CHUNK_SIZE) { chunks.push(s); continue; }
+        let start = 0;
+        while (start < s.length) {
+            const chunk = s.slice(start, start + CHUNK_SIZE).trim();
+            if (chunk) chunks.push(chunk);
+            start += CHUNK_SIZE - OVERLAP;
+        }
+    }
+    return chunks;
+}
+
+function inferLabel(chunkText) {
+    const lines = chunkText.split('\n').map(l => l.trim()).filter(Boolean);
+    const firstLine = lines[0] || '';
+    const secMatch = firstLine.match(/^SECTION\s+(\d+)\s*[—\-:.]?\s*(.*)/i);
+    if (secMatch) {
+        const num = secMatch[1];
+        const topic = secMatch[2].trim();
+        return { label: `Section ${num}`, topic: topic || `Section ${num}` };
+    }
+    if (firstLine === firstLine.toUpperCase() && firstLine.length > 3 && firstLine.length < 80)
+        return { label: firstLine.slice(0, 40), topic: firstLine };
+    if (firstLine.length < 80 && !firstLine.endsWith('.') && lines.length > 1)
+        return { label: firstLine.slice(0, 40), topic: firstLine };
+    return { label: firstLine.slice(0, 40), topic: firstLine.slice(0, 60) };
+}
+
+function makeQuestion(topic) {
+    const t = topic.trim();
+    if (!t) return 'Tell me more about this.';
+    if (t.endsWith('?')) return t;
+    const stripped = t.replace(/^SECTION\s+\d+\s*[—\-:.]?\s*/i, '').trim();
+    if (!stripped) return `What is ${t}?`;
+    const lower = stripped.toLowerCase();
+    if (['what','how','why','when','where','who'].some(w => lower.startsWith(w))) return stripped;
+    return `What is ${stripped}?`;
+}
 
 /* ── helpers ── */
 async function parseFile(buffer, ext) {
@@ -45,7 +95,7 @@ const MAX_SIZE = 30 * 1024 * 1024; // 30 MB
 export async function GET() {
     try {
         const [rows] = await pool.query(
-            'SELECT id, filename, original_name, file_type, file_size, created_at FROM general_documents ORDER BY created_at DESC'
+            'SELECT id, filename, original_name, file_type, file_size, keywords, created_at FROM general_documents ORDER BY created_at DESC'
         );
         return NextResponse.json({ success: true, data: rows });
     } catch (err) {
@@ -103,6 +153,53 @@ export async function POST(request) {
             [safeFilename, originalName, ext, file.size, `/uploads/${safeFilename}`, JSON.stringify(extractedData)]
         );
 
+        const docId = result.insertId;
+
+        // ── Auto-extract keywords ──
+        try {
+            const keywords = extractKeywordsFromDoc(extractedData);
+            if (keywords.length > 0) {
+                await pool.query('UPDATE general_documents SET keywords = ? WHERE id = ?', [JSON.stringify(keywords), docId]);
+            }
+        } catch (kwErr) {
+            console.warn('[Keywords] Failed to extract keywords:', kwErr.message);
+        }
+
+        // ── Auto-generate pending FAQ proposals ──
+        try {
+            let docText = '';
+            if (extractedData?.text) {
+                docText = extractedData.text.trim();
+            } else if (extractedData?.sheets) {
+                docText = Object.entries(extractedData.sheets)
+                    .map(([name, rows]) => `${name}:\n${rows.map(r => r.join('\t')).join('\n')}`)
+                    .join('\n\n').trim();
+            }
+
+            if (docText) {
+                const chunks = chunkText(docText);
+                // Limit to first 30 chunks to avoid flooding the queue
+                const limited = chunks.slice(0, 30);
+                const conn = await pool.getConnection();
+                try {
+                    for (const chunk of limited) {
+                        const { label, topic } = inferLabel(chunk);
+                        const question = makeQuestion(topic);
+                        await conn.query(
+                            `INSERT INTO pending_faqs (doc_id, doc_name, section, question, answer, status)
+                             VALUES (?, ?, ?, ?, ?, 'pending')`,
+                            [docId, originalName, label, question, chunk]
+                        );
+                    }
+                    console.log(`[Auto-FAQ] Generated ${limited.length} proposals for '${originalName}'.`);
+                } finally {
+                    conn.release();
+                }
+            }
+        } catch (faqErr) {
+            console.warn('[Auto-FAQ] Failed to generate proposals:', faqErr.message);
+        }
+
         // ── Forward extracted text to AI Engine RAG pipeline (non-blocking) ──
         const rawText =
             extractedData.text ||
@@ -139,7 +236,7 @@ export async function POST(request) {
         return NextResponse.json({
             success: true,
             data: {
-                id: result.insertId,
+                id: docId,
                 filename: safeFilename,
                 original_name: originalName,
                 file_type: ext,
