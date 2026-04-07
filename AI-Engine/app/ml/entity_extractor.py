@@ -9,16 +9,21 @@ import re
 from typing import Dict
 
 
-# Patterns for extracting PDID numbers
+# Patterns for extracting PDID numbers (ordered most-to-least specific)
 PDID_PATTERNS = [
     # Explicit PDID prefix: "PDID 001", "PDID-001", "PDID001", "pdid 001"
     re.compile(r"(?i)\bpdid[\s\-_]*(\d{1,10})\b"),
     # PDID with connector words: "My PDID is 007", "PDID number 003"
     re.compile(r"(?i)\bpdid\s+(?:is|number|no\.?|num)\s+(\d{1,10})\b"),
-    # Tracking number keywords (tightened to avoid false-matching dates/general numbers)
-    re.compile(r"(?i)\b(?:document|tracking)\s*(?:no\.?|number|#)?\s*(\d{1,10})\b"),
-    # Just a standalone number when in context of document tracking (fallback)
-    # Only matches if the message is very short (likely a follow-up with just the number)
+    # Tracking / document number keywords: "tracking number is 1005", "document no. 1002"
+    re.compile(r"(?i)\b(?:tracking|document|doc)\s*(?:no\.?|number|#|id)?\s*(?:is|=|:)?\s*(\d{3,10})\b"),
+    # "status of 1003", "check 1002", "where is 1005", "track my 1004"
+    re.compile(r"(?i)\b(?:status|check|track|locate|find|where|update)\s+(?:of|for|is|on|my|document|doc)?\s*(?:pdid)?\s*(\d{3,10})\b"),
+    # "my document 1001", "document number 1002", "doc 1003"
+    re.compile(r"(?i)\b(?:my\s+)?(?:document|doc)\s*(?:no\.?|number|#|id)?\s*(\d{3,10})\b"),
+    # "number 1001", "no. 1002", "#1003"
+    re.compile(r"(?i)\b(?:number|no\.?|#)\s*(\d{3,10})\b"),
+    # Just a standalone number (short message — likely a follow-up reply with just the PDID)
     re.compile(r"^\s*(\d{1,10})\s*$"),
 ]
 

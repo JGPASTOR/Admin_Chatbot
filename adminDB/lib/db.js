@@ -95,6 +95,13 @@ async function initDb() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
 
+        // Migration guard: fix pre-existing faq_entries tables that may be missing defaults
+        await conn.query(`
+            ALTER TABLE \`faq_entries\`
+                MODIFY COLUMN \`created_at\` DATETIME DEFAULT CURRENT_TIMESTAMP,
+                MODIFY COLUMN \`updated_at\` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        `).catch(() => { /* ignore if already correct */ });
+
         console.log('✅ DB tables ready (documenttracker)');
     } catch (err) {
         console.error('❌ DB init error:', err.message);

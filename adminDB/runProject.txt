@@ -4,7 +4,8 @@ ngrok http 8000
 link data: http://devapi.surigaocity.gov.ph/api/web_app/public/document_viewer_qrcode/?t1.id=1002
 
 
-
+docker compose down 
+docker compose up --build -d
 
 
 to seed data in mysql: curl.exe -s http://127.0.0.1:8000/api/seed
