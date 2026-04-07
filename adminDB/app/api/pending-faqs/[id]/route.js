@@ -21,8 +21,8 @@ export async function PUT(request, { params }) {
             const finalS = (section !== undefined ? section : p.section)?.trim() || null;
 
             await pool.query(
-                'INSERT INTO faq_entries (question, answer, section) VALUES (?, ?, ?)',
-                [finalQ, finalA, finalS]
+                'INSERT INTO faq_entries (question, answer, section, doc_id, doc_name) VALUES (?, ?, ?, ?, ?)',
+                [finalQ, finalA, finalS, p.doc_id ?? null, p.doc_name ?? null]
             );
             await pool.query("UPDATE pending_faqs SET status = 'approved' WHERE id = ?", [id]);
 

@@ -90,6 +90,8 @@ async function initDb() {
                 \`question\`   TEXT           NOT NULL,
                 \`answer\`     TEXT           NOT NULL,
                 \`section\`    VARCHAR(100)   DEFAULT NULL,
+                \`doc_id\`     INT            DEFAULT NULL,
+                \`doc_name\`   VARCHAR(255)   DEFAULT NULL,
                 \`created_at\` DATETIME       DEFAULT CURRENT_TIMESTAMP,
                 \`updated_at\` DATETIME       DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -101,6 +103,10 @@ async function initDb() {
                 MODIFY COLUMN \`created_at\` DATETIME DEFAULT CURRENT_TIMESTAMP,
                 MODIFY COLUMN \`updated_at\` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         `).catch(() => { /* ignore if already correct */ });
+
+        // Migrate existing installs — add doc_id / doc_name if missing
+        try { await conn.query(`ALTER TABLE faq_entries ADD COLUMN \`doc_id\` INT DEFAULT NULL`); } catch { /* exists */ }
+        try { await conn.query(`ALTER TABLE faq_entries ADD COLUMN \`doc_name\` VARCHAR(255) DEFAULT NULL`); } catch { /* exists */ }
 
         console.log('✅ DB tables ready (documenttracker)');
     } catch (err) {

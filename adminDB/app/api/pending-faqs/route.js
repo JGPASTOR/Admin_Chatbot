@@ -49,10 +49,10 @@ export async function POST(request) {
                 const answer = override?.answer?.trim() || p.answer;
                 const section = override?.section?.trim() || p.section;
 
-                // Insert into faq_entries
+                // Insert into faq_entries (preserve source document)
                 await conn.query(
-                    'INSERT INTO faq_entries (question, answer, section) VALUES (?, ?, ?)',
-                    [question, answer, section]
+                    'INSERT INTO faq_entries (question, answer, section, doc_id, doc_name) VALUES (?, ?, ?, ?, ?)',
+                    [question, answer, section, p.doc_id ?? null, p.doc_name ?? null]
                 );
 
                 // Mark as approved

@@ -4,30 +4,62 @@ import fs from 'fs/promises';
 import path from 'path';
 import { extractKeywordsFromDoc } from '../../../lib/keywords';
 
-/* ── Auto-FAQ chunk helpers (mirrors faq/suggest logic) ── */
-const CHUNK_SIZE = 500;
-const OVERLAP = 100;
+/* ── Auto-FAQ chunk helpers ── */
+const MIN_CHUNK = 150;
+const MAX_CHUNK = 800;
 
+/**
+ * Semantic chunking:
+ * 1. Split by SECTION headers first (preserves document structure)
+ * 2. Within each section, split by paragraph (blank lines)
+ * 3. Merge tiny paragraphs into previous chunk; split huge ones by sentence
+ */
 function chunkText(text) {
+    // Split at SECTION boundaries first
     const sectionPattern = /(?=\bSECTION\s+\d+\b)/gi;
     const sections = text.split(sectionPattern);
     const chunks = [];
+
     for (const section of sections) {
         const s = section.trim();
         if (!s) continue;
-        if (s.length <= CHUNK_SIZE) { chunks.push(s); continue; }
-        let start = 0;
-        while (start < s.length) {
-            const chunk = s.slice(start, start + CHUNK_SIZE).trim();
-            if (chunk) chunks.push(chunk);
-            start += CHUNK_SIZE - OVERLAP;
+
+        // Split section into paragraphs (2+ newlines = paragraph break)
+        const paragraphs = s.split(/\n{2,}/).map(p => p.trim()).filter(p => p.length >= 30);
+
+        let current = '';
+        for (const para of paragraphs) {
+            if ((current + '\n\n' + para).trim().length <= MAX_CHUNK) {
+                current = current ? current + '\n\n' + para : para;
+            } else {
+                if (current.length >= MIN_CHUNK) chunks.push(current.trim());
+                // If paragraph itself is too large, split by sentences
+                if (para.length > MAX_CHUNK) {
+                    const sentences = para.match(/[^.!?]+[.!?]+/g) || [para];
+                    let sub = '';
+                    for (const sent of sentences) {
+                        if ((sub + ' ' + sent).trim().length <= MAX_CHUNK) {
+                            sub = sub ? sub + ' ' + sent : sent;
+                        } else {
+                            if (sub.length >= MIN_CHUNK) chunks.push(sub.trim());
+                            sub = sent;
+                        }
+                    }
+                    if (sub.length >= MIN_CHUNK) chunks.push(sub.trim());
+                    current = '';
+                } else {
+                    current = para;
+                }
+            }
         }
+        if (current.length >= MIN_CHUNK) chunks.push(current.trim());
     }
+
     return chunks;
 }
 
-function inferLabel(chunkText) {
-    const lines = chunkText.split('\n').map(l => l.trim()).filter(Boolean);
+function inferLabel(chunk) {
+    const lines = chunk.split('\n').map(l => l.trim()).filter(Boolean);
     const firstLine = lines[0] || '';
     const secMatch = firstLine.match(/^SECTION\s+(\d+)\s*[—\-:.]?\s*(.*)/i);
     if (secMatch) {
@@ -35,21 +67,60 @@ function inferLabel(chunkText) {
         const topic = secMatch[2].trim();
         return { label: `Section ${num}`, topic: topic || `Section ${num}` };
     }
-    if (firstLine === firstLine.toUpperCase() && firstLine.length > 3 && firstLine.length < 80)
-        return { label: firstLine.slice(0, 40), topic: firstLine };
+    // ALL-CAPS heading
+    if (firstLine === firstLine.toUpperCase() && firstLine.length > 3 && firstLine.length < 100)
+        return { label: firstLine.slice(0, 60), topic: firstLine };
+    // Title-case line without period
     if (firstLine.length < 80 && !firstLine.endsWith('.') && lines.length > 1)
-        return { label: firstLine.slice(0, 40), topic: firstLine };
-    return { label: firstLine.slice(0, 40), topic: firstLine.slice(0, 60) };
+        return { label: firstLine.slice(0, 60), topic: firstLine };
+    return { label: firstLine.slice(0, 60), topic: firstLine.slice(0, 80) };
 }
 
-function makeQuestion(topic) {
+/**
+ * Smarter question generation:
+ * - Detects definition patterns → "What is X?"
+ * - Detects requirement/must patterns → "What are the requirements for X?"
+ * - Detects procedure/steps → "How do you X?"
+ * - Detects purpose/objective → "What is the purpose of X?"
+ * - Falls back to topic-based question
+ */
+function makeQuestion(topic, chunkBody) {
     const t = topic.trim();
-    if (!t) return 'Tell me more about this.';
+    if (!t) return 'What does this section cover?';
     if (t.endsWith('?')) return t;
+
     const stripped = t.replace(/^SECTION\s+\d+\s*[—\-:.]?\s*/i, '').trim();
-    if (!stripped) return `What is ${t}?`;
+    if (!stripped) return `What is Section ${t}?`;
+
     const lower = stripped.toLowerCase();
-    if (['what','how','why','when','where','who'].some(w => lower.startsWith(w))) return stripped;
+    const body = (chunkBody || '').toLowerCase();
+
+    // Already a question word
+    if (/^(what|how|why|when|where|who|which|can|is|are|does|do)\b/.test(lower)) {
+        return stripped.endsWith('?') ? stripped : stripped + '?';
+    }
+
+    // Definition clues in body
+    if (/\b(means|refers to|is defined as|is described as)\b/.test(body))
+        return `What is ${stripped}?`;
+
+    // Requirement/must clues
+    if (/\b(must|shall|required|requirement|comply|compliance)\b/.test(body))
+        return `What are the requirements for ${stripped}?`;
+
+    // Procedure/process clues
+    if (/\b(steps|procedure|process|how to|follow|submit|apply|accomplish)\b/.test(body))
+        return `How do you ${stripped.toLowerCase()}?`;
+
+    // Purpose/objective clues
+    if (/\b(purpose|objective|goal|aim|intend|ensure)\b/.test(body))
+        return `What is the purpose of ${stripped}?`;
+
+    // Eligibility clues
+    if (/\b(eligible|eligibility|qualify|qualified|who can)\b/.test(body))
+        return `Who is eligible for ${stripped}?`;
+
+    // Default: "What is X?"
     return `What is ${stripped}?`;
 }
 
@@ -178,13 +249,13 @@ export async function POST(request) {
 
             if (docText) {
                 const chunks = chunkText(docText);
-                // Limit to first 30 chunks to avoid flooding the queue
-                const limited = chunks.slice(0, 30);
+                // Limit to first 50 semantic chunks
+                const limited = chunks.slice(0, 50);
                 const conn = await pool.getConnection();
                 try {
                     for (const chunk of limited) {
                         const { label, topic } = inferLabel(chunk);
-                        const question = makeQuestion(topic);
+                        const question = makeQuestion(topic, chunk);
                         await conn.query(
                             `INSERT INTO pending_faqs (doc_id, doc_name, section, question, answer, status)
                              VALUES (?, ?, ?, ?, ?, 'pending')`,

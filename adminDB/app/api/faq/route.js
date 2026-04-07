@@ -12,10 +12,15 @@ async function ensureTable() {
                 \`question\`   TEXT         NOT NULL,
                 \`answer\`     TEXT         NOT NULL,
                 \`section\`    VARCHAR(100) DEFAULT NULL,
+                \`doc_id\`     INT          DEFAULT NULL,
+                \`doc_name\`   VARCHAR(255) DEFAULT NULL,
                 \`created_at\` DATETIME     DEFAULT CURRENT_TIMESTAMP,
                 \`updated_at\` DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
+        // Migrate existing installs
+        try { await conn.query(`ALTER TABLE faq_entries ADD COLUMN \`doc_id\` INT DEFAULT NULL`); } catch { /* exists */ }
+        try { await conn.query(`ALTER TABLE faq_entries ADD COLUMN \`doc_name\` VARCHAR(255) DEFAULT NULL`); } catch { /* exists */ }
     } finally {
         conn.release();
     }
@@ -37,7 +42,7 @@ export async function GET() {
     try {
         await ensureTable();
         const [rows] = await pool.query(
-            'SELECT id, question, answer, section, created_at, updated_at FROM faq_entries ORDER BY created_at DESC'
+            'SELECT id, question, answer, section, doc_id, doc_name, created_at, updated_at FROM faq_entries ORDER BY created_at DESC'
         );
         return NextResponse.json({
             success: true,
@@ -63,6 +68,8 @@ export async function POST(request) {
         const question = body?.question?.trim();
         const answer   = body?.answer?.trim();
         const section  = body?.section?.trim() || null;
+        const doc_id   = body?.doc_id ?? null;
+        const doc_name = body?.doc_name?.trim() || null;
 
         if (!question || !answer) {
             return NextResponse.json({ success: false, error: 'question and answer are required.' }, { status: 400 });
@@ -72,8 +79,8 @@ export async function POST(request) {
         let id;
         try {
             const [result] = await conn.query(
-                'INSERT INTO `faq_entries` (`question`, `answer`, `section`) VALUES (?, ?, ?)',
-                [question, answer, section]
+                'INSERT INTO `faq_entries` (`question`, `answer`, `section`, `doc_id`, `doc_name`) VALUES (?, ?, ?, ?, ?)',
+                [question, answer, section, doc_id, doc_name]
             );
             id = result.insertId;
         } finally {
