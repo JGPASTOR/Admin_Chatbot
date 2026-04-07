@@ -23,15 +23,29 @@ _store_dir: str = ""   # set during initialize_rag; used by add_document_to_inde
 
 
 def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> List[str]:
-    """Split text into overlapping chunks for better retrieval coverage."""
+    """Split text into overlapping chunks, respecting section boundaries."""
+    # Split on section headers first so chunks never span multiple sections.
+    # Matches patterns like "SECTION 1", "SECTION 2 —", "Section 1.", etc.
+    section_pattern = re.compile(r'(?=\bSECTION\s+\d+\b)', re.IGNORECASE)
+    sections = section_pattern.split(text)
+
     chunks = []
-    start = 0
-    while start < len(text):
-        end = start + chunk_size
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        start += chunk_size - overlap
+    for section in sections:
+        section = section.strip()
+        if not section:
+            continue
+        # If the section fits in one chunk, keep it whole
+        if len(section) <= chunk_size:
+            chunks.append(section)
+        else:
+            # Chunk within the section using sliding window
+            start = 0
+            while start < len(section):
+                end = start + chunk_size
+                chunk = section[start:end].strip()
+                if chunk:
+                    chunks.append(chunk)
+                start += chunk_size - overlap
     return chunks
 
 
@@ -326,7 +340,7 @@ def retrieve_context(query: str, top_k: int = 3) -> Optional[str]:
         A single string with the top-K chunks joined, or None if RAG is not ready.
     """
     global _chunks, _embeddings, _embedding_model
-    
+
     if not _rag_ready or _embeddings is None or _embedding_model is None:
         return None
 
@@ -348,47 +362,94 @@ def retrieve_context(query: str, top_k: int = 3) -> Optional[str]:
         # 2. Compute semantic similarity against all chunks
         similarities = cosine_similarity(query_emb, embeddings_snapshot)[0]
 
-        # 3. Hybrid Keyword Boost (Sparse Retrieval)
-        # Extract meaningful keywords from the query (e.g., names, IDs, numbers)
-        # Filter out common stop words
-        stop_words = {"the", "and", "for", "with", "from", "that", "this", "what", "where", "how", "who", "when", "why", "are", "you", "can", "tell", "about", "status", "document", "documents", "my", "is"}
-        raw_words = re.findall(r'\b[a-zA-Z0-9-]+\b', query.lower())
-        # ALOW digits as keywords even if short, otherwise "Section 1" fails
-        keywords = [w for w in raw_words if (len(w) >= 3 or w.isdigit()) and w not in stop_words]
+        query_lower = query.lower()
+
+        # 3. Section-targeted boosting
+        # When the query specifically references "section N", strongly prioritize that
+        # section and penalize chunks that belong to other sections.
+        section_query_match = re.search(r'\bsection\s+(\d+)\b', query_lower)
+        if section_query_match:
+            target_section = section_query_match.group(1)
+            target_pattern = re.compile(
+                rf'\bsection\s+{re.escape(target_section)}\b', re.IGNORECASE
+            )
+            other_section_pattern = re.compile(r'\bsection\s+(\d+)\b', re.IGNORECASE)
+
+            for i, chunk_text in enumerate(chunks_snapshot):
+                chunk_stripped = chunk_text.strip()
+                chunk_lower_s = chunk_stripped.lower()
+
+                # Massive boost: chunk STARTS with the target section header
+                if target_pattern.match(chunk_lower_s):
+                    similarities[i] += 3.0
+                # Large boost: target section header appears anywhere in the chunk
+                elif target_pattern.search(chunk_lower_s):
+                    similarities[i] += 2.0
+                else:
+                    # Penalize chunks that clearly belong to a DIFFERENT numbered section
+                    other_matches = other_section_pattern.findall(chunk_lower_s)
+                    if other_matches and target_section not in other_matches:
+                        similarities[i] -= 0.5
+
+        # 4. Hybrid Keyword Boost (Sparse Retrieval)
+        # Extract meaningful keywords from the query.
+        # Expanded stop-word list prevents words like "tell"/"give"/"show" from
+        # corrupting phrase reconstruction.
+        stop_words = {
+            "the", "and", "for", "with", "from", "that", "this", "what",
+            "where", "how", "who", "when", "why", "are", "you", "can",
+            "tell", "give", "show", "about", "status", "document", "documents",
+            "my", "is", "me", "its", "their", "a", "an", "in", "of", "to",
+            "be", "do", "on", "at", "by", "up", "as", "it", "or", "was",
+            "has", "had", "will", "just", "please", "get", "let", "know",
+        }
+        raw_words = re.findall(r'\b[a-zA-Z0-9-]+\b', query_lower)
+        # Allow single-digit numbers (e.g. "1" in "section 1") as valid keywords
+        keywords = [
+            w for w in raw_words
+            if (len(w) >= 3 or w.isdigit()) and w not in stop_words
+        ]
 
         if keywords:
-            query_lower = query.lower()
-            # For each chunk, count how many unique keywords it contains
+            # Build all consecutive sub-phrase candidates (length 2–4) from the
+            # filtered keyword list — but ONLY include a candidate if that exact
+            # string also appears in the original (lowercased) query.  This
+            # prevents junk phrases like "tell section 1" from matching nothing.
+            candidate_phrases: List[str] = []
+            for n in range(2, min(len(keywords) + 1, 5)):
+                for j in range(len(keywords) - n + 1):
+                    phrase = " ".join(keywords[j : j + n])
+                    if phrase in query_lower:
+                        candidate_phrases.append(phrase)
+
             for i, chunk_text in enumerate(chunks_snapshot):
-                chunk_lower = chunk_text.lower()
-                
-                # a) Individual keyword matches
-                matches = sum(1 for kw in keywords if kw in chunk_lower)
-                
-                # b) Big Boost: Phrase matching
-                # If the exact sequence of keywords (ignoring stop words) appears in the chunk
-                # example: "section 1"
-                phrase = " ".join(keywords)
-                phrase_boost = 1.0 if (len(keywords) > 1 and phrase in chunk_lower) else 0.0
-                
-                # Apply a significant boost per exact keyword match
-                # Plus the phrase match boost
+                chunk_lower_kw = chunk_text.lower()
+
+                # a) Individual keyword matches (+0.3 each)
+                matches = sum(1 for kw in keywords if kw in chunk_lower_kw)
+
+                # b) Phrase matches (+1.0 per matching phrase)
+                phrase_boost = sum(
+                    1.0 for ph in candidate_phrases if ph in chunk_lower_kw
+                )
+
                 if matches > 0 or phrase_boost > 0:
-                    # +0.3 per keyword match + 1.0 for exact phrase
                     similarities[i] += (matches * 0.3) + phrase_boost
-                    
-        # 4. Get top-K indices (sorted descending)
+
+        # 5. Get top-K indices (sorted descending)
         top_indices = np.argsort(similarities)[-top_k:][::-1]
 
-        # 5. Filter by minimum similarity threshold to drop irrelevant chunks.
+        # 6. Filter by minimum similarity threshold to drop irrelevant chunks.
         # Raw cosine scores sit roughly in [0, 1]; keyword boosts push them higher.
         # A threshold of 0.30 keeps chunks that are genuinely on-topic while
         # discarding tangential sections that happen to share surface-level tokens.
-        MIN_SIMILARITY = 0.30
+        # For section-targeted queries, use a lower floor so the correct section
+        # is always returned even when the semantic score alone is modest.
+        min_sim = 0.10 if section_query_match else 0.30
         docs = [
             chunks_snapshot[i]
             for i in top_indices
-            if similarities[i] >= MIN_SIMILARITY
+            if similarities[i] >= min_sim
         ]
 
         if not docs:

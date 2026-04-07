@@ -1,5 +1,6 @@
 """Client for the central LLM Service."""
 
+import re
 import httpx
 import logging
 from typing import Dict, Any, Optional
@@ -187,9 +188,17 @@ def _build_prompt(
     if intent in ("lgu_query", "follow_up") or rag_context:
         question = user_message or "a question"
         if rag_context:
+            # If the user asked about a specific section, add a focused instruction
+            section_match = re.search(r'\bsection\s+(\d+)\b', question, re.IGNORECASE)
+            section_hint = (
+                f" The user is specifically asking about Section {section_match.group(1)}. "
+                f"Focus your answer on that section's content."
+            ) if section_match else ""
+
             return (
                 f"The user asked: \"{question}\"\n\n"
-                f"Use ONLY the following excerpts from our official knowledge base and uploaded documents to answer. "
+                f"Use ONLY the following excerpts from our official knowledge base and uploaded documents to answer."
+                f"{section_hint} "
                 f"Do NOT make up information not found below. If the answer isn't in the excerpts, "
                 f"say so politely and suggest they contact the DTS office.\n\n"
                 f"--- Document Excerpts ---\n{rag_context}\n--- End of Excerpts ---\n\n"
