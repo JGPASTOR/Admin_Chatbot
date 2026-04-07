@@ -24,6 +24,23 @@ _store_dir: str = ""   # set during initialize_rag; used by add_document_to_inde
 
 _MAX_CHUNK_CHARS = 3000  # hard cap per chunk
 
+# Matches lines that are 3+ repeated decorative characters (═══, ----, ====, etc.)
+_DECO_LINE_RE = re.compile(r'^([═=\-_*~─━▬])\1{2,}$')
+
+
+def _clean_text(text: str) -> str:
+    """Strip decorative separator lines and junk characters from document text."""
+    cleaned = []
+    for line in text.splitlines():
+        t = line.strip()
+        if _DECO_LINE_RE.match(t):
+            continue
+        # Drop lines that are mostly non-alphanumeric (table borders, box-drawing art)
+        if len(t) > 0 and len(re.sub(r'[^a-zA-Z0-9]', '', t)) / len(t) < 0.2:
+            continue
+        cleaned.append(line)
+    return re.sub(r'\n{3,}', '\n\n', '\n'.join(cleaned)).strip()
+
 
 def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> List[str]:
     """
@@ -39,6 +56,7 @@ def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> List[st
        split by paragraph so short facts (e.g. "The mayor is John Doe") stay
        in their own retrievable chunk.
     """
+    text = _clean_text(text)
     section_pattern = re.compile(r'(?=\bSECTION\s+\d+\b)', re.IGNORECASE)
     parts = section_pattern.split(text)
 
@@ -478,7 +496,11 @@ def retrieve_context(query: str, top_k: int = 3) -> Optional[str]:
         if not docs:
             return None
 
-        return "\n\n---\n\n".join(docs)
+        # Clean decorative lines from retrieved chunks before sending to LLM
+        docs = [_clean_text(d) for d in docs]
+        docs = [d for d in docs if d]  # drop any that became empty after cleaning
+
+        return "\n\n---\n\n".join(docs) if docs else None
     except Exception as e:
         logger.error(f"[RAG] Retrieval failed: {e}")
         return None
