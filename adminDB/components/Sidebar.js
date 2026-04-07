@@ -121,18 +121,34 @@ export default function Sidebar() {
                     Main Menu
                 </div>
                 {navItems.map(item => {
-                    const active = pathname === item.href || pathname.startsWith(item.href + '/');
+                    let active = false;
+                    if (item.href === '/faq') {
+                        active = pathname === '/faq' || pathname === '/faq/';
+                    } else if (item.href === '/faq/browse') {
+                        active = pathname === '/faq/browse' || pathname.startsWith('/faq/browse/');
+                    } else {
+                        active = pathname === item.href || pathname.startsWith(item.href + '/');
+                    }
+                    
                     return (
                         <Link key={item.href} href={item.href} style={{
+                            position: 'relative',
                             display: 'flex', alignItems: 'center', gap: 10,
                             padding: '10px 12px', borderRadius: 8, marginBottom: 2,
                             color: active ? '#fff' : 'rgba(255,255,255,0.65)',
                             background: active ? 'rgba(255,255,255,0.12)' : 'transparent',
                             textDecoration: 'none', fontWeight: active ? 600 : 400,
                             fontSize: 13, transition: 'all 0.15s ease',
-                            borderLeft: active ? '3px solid var(--primary-accent)' : '3px solid transparent',
+                            overflow: 'hidden'
                         }}>
-                            <span style={{ opacity: active ? 1 : 0.7 }}>{item.icon}</span>
+                            {active && (
+                                <div style={{
+                                    position: 'absolute',
+                                    left: 0, top: 0, bottom: 0, width: 3,
+                                    background: 'var(--primary-accent)',
+                                }} />
+                            )}
+                            <span style={{ opacity: active ? 1 : 0.7, paddingLeft: 2 }}>{item.icon}</span>
                             {item.label}
                         </Link>
                     );

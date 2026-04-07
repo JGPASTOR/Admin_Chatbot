@@ -4,7 +4,8 @@ import pool from '../../../../lib/db';
 /* PUT — approve or reject a single pending FAQ (with optional edits) */
 export async function PUT(request, { params }) {
     try {
-        const id = Number(params.id);
+        const resolvedParams = await params;
+        const id = Number(resolvedParams.id);
         const body = await request.json();
         const { action, question, answer, section } = body;
         // action: 'approve' | 'reject'
@@ -54,7 +55,8 @@ export async function PUT(request, { params }) {
 /* DELETE — hard delete a pending FAQ entry */
 export async function DELETE(request, { params }) {
     try {
-        const id = Number(params.id);
+        const resolvedParams = await params;
+        const id = Number(resolvedParams.id);
         await pool.query('DELETE FROM pending_faqs WHERE id = ?', [id]);
         return NextResponse.json({ success: true });
     } catch (err) {
