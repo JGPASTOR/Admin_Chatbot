@@ -8,6 +8,24 @@ import pool from '../../../../lib/db';
    Falls back to rule-based extraction if AI Engine is offline.
 */
 
+// ── Text cleaner — strips decorative separator lines and junk before chunking ──
+function cleanDocText(text) {
+    return text
+        .split('\n')
+        .map(line => {
+            const t = line.trim();
+            // Drop lines that are 3+ repeated decorative characters (═══, ----, ====, etc.)
+            if (/^([═=\-_*~─━▬•·\s])\1{2,}$/.test(t)) return '';
+            // Drop lines that are mostly non-alphanumeric (likely table borders / art)
+            if (t.length > 0 && (t.replace(/[^a-zA-Z0-9]/g, '').length / t.length) < 0.2) return '';
+            return line;
+        })
+        .join('\n')
+        // Collapse 3+ blank lines into 2
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
 // ── Rule-based fallback ──
 const MIN_CHUNK = 150;
 const MAX_CHUNK = 800;
@@ -127,6 +145,9 @@ export async function POST(request) {
         if (!text) {
             return NextResponse.json({ success: false, error: 'No readable text found in this document.' }, { status: 400 });
         }
+
+        // Strip decorative lines before any processing
+        text = cleanDocText(text);
 
         // ── Try LLM-powered generation first ──
         const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';

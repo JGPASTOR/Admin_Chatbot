@@ -4,6 +4,21 @@ import fs from 'fs/promises';
 import path from 'path';
 import { extractKeywordsFromDoc } from '../../../lib/keywords';
 
+/* ── Text cleaner — strips decorative separator lines before chunking/LLM ── */
+function cleanDocText(text) {
+    return text
+        .split('\n')
+        .map(line => {
+            const t = line.trim();
+            if (/^([═=\-_*~─━▬•·\s])\1{2,}$/.test(t)) return '';
+            if (t.length > 0 && (t.replace(/[^a-zA-Z0-9]/g, '').length / t.length) < 0.2) return '';
+            return line;
+        })
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
 /* ── Auto-FAQ chunk helpers ── */
 const MIN_CHUNK = 150;
 const MAX_CHUNK = 800;
@@ -240,7 +255,7 @@ export async function POST(request) {
         try {
             let docText = '';
             if (extractedData?.text) {
-                docText = extractedData.text.trim();
+                docText = cleanDocText(extractedData.text);
             } else if (extractedData?.sheets) {
                 docText = Object.entries(extractedData.sheets)
                     .map(([name, rows]) => `${name}:\n${rows.map(r => r.join('\t')).join('\n')}`)
@@ -329,9 +344,9 @@ export async function POST(request) {
         }
 
         // ── Forward extracted text to AI Engine RAG pipeline (non-blocking) ──
-        const rawText =
-            extractedData.text ||
-            (extractedData.sheets ? JSON.stringify(extractedData.sheets) : '');
+        const rawText = extractedData.text
+            ? cleanDocText(extractedData.text)
+            : (extractedData.sheets ? JSON.stringify(extractedData.sheets) : '');
 
         let ragWarning = null;
         if (rawText) {

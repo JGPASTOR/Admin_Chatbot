@@ -381,6 +381,21 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
     if not text:
         return {"success": True, "pairs": [], "total": 0}
 
+    # Clean decorative separator lines (═══, ----, ====, etc.) before chunking
+    import re as _re
+    cleaned_lines = []
+    for line in text.splitlines():
+        t = line.strip()
+        # Drop lines that are 3+ repeated decorative chars
+        if _re.match(r'^([═=\-_*~─━▬])\1{2,}$', t):
+            continue
+        # Drop lines that are mostly non-alphanumeric (table borders, art)
+        alnum = len(_re.sub(r'[^a-zA-Z0-9]', '', t))
+        if len(t) > 0 and alnum / len(t) < 0.2:
+            continue
+        cleaned_lines.append(line)
+    text = _re.sub(r'\n{3,}', '\n\n', '\n'.join(cleaned_lines)).strip()
+
     # Step 1: Chunk the document using the same strategy as the RAG index
     chunks = _chunk_text(text)
     chunks = [c.strip() for c in chunks if len(c.strip()) >= 120]
