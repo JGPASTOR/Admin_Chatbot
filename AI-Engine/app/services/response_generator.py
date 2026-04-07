@@ -509,12 +509,10 @@ def generate_response(
     # single most relevant chunk (first in the list — already ranked by score).
     # Showing all chunks produces unrelated sections that confuse the user.
     if rag_context:
-        prefix = "📋 Here's what I found in our records:\n\n"
-        if language == "tl":
-            prefix = "📋 Narito ang nahanap ko sa aming mga rekord:\n\n"
-
         top_chunk = rag_context.split("\n\n---\n\n")[0].strip()
-        return f"{prefix}{top_chunk}"
+        # Show only the first paragraph of the chunk (before any subheadings or blank lines)
+        first_para = top_chunk.split("\n\n")[0].strip()
+        return first_para
 
     # ── Help ─────────────────────────────────────────────────────────────────
     if intent == "help":
