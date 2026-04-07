@@ -28,9 +28,21 @@ export default function FAQBrowsePage() {
         fetch('/api/faq')
             .then(r => r.json())
             .then(res => {
+                // Deduplicate: same question may be saved twice (once with doc_name, once without).
+                // Keep the entry with doc_name; discard the duplicate without.
+                const seen = new Map();
+                for (const e of (res.entries || [])) {
+                    const key = e.question.toLowerCase().trim();
+                    const existing = seen.get(key);
+                    if (!existing || (!existing.doc_name && e.doc_name)) {
+                        seen.set(key, e);
+                    }
+                }
+                const deduped = [...seen.values()];
+
                 // Group by doc_name; entries with no doc_name go under "Manual Entries"
                 const groups = {};
-                for (const e of (res.entries || [])) {
+                for (const e of deduped) {
                     const key = e.doc_name?.trim() || '__manual__';
                     if (!groups[key]) groups[key] = { label: docLabel(e.doc_name), entries: [] };
                     groups[key].entries.push(e);

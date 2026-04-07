@@ -290,6 +290,11 @@ export default function FAQPage() {
         for (const p of toSave) {
             try {
                 const q = editedQuestions[p.index] ?? p.question;
+                // Skip if this question is already saved (prevents duplicates)
+                const alreadyExists = entries.some(
+                    e => e.question.toLowerCase().trim() === q.toLowerCase().trim()
+                );
+                if (alreadyExists) { saved++; continue; }
                 const res = await fetch('/api/faq', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },

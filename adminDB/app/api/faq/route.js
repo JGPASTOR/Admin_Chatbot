@@ -103,6 +103,22 @@ export async function POST(request) {
         const conn = await pool.getConnection();
         let id;
         try {
+            // If exact same question already exists, update doc_name/doc_id if missing rather than inserting duplicate
+            const [existing] = await conn.query(
+                'SELECT id, doc_name, doc_id FROM faq_entries WHERE LOWER(TRIM(question)) = LOWER(TRIM(?)) LIMIT 1',
+                [question]
+            );
+            if (existing.length > 0) {
+                id = existing[0].id;
+                // Upgrade the existing entry with doc info if it was saved without it
+                if (doc_name && !existing[0].doc_name) {
+                    await conn.query(
+                        'UPDATE faq_entries SET doc_name = ?, doc_id = ? WHERE id = ?',
+                        [doc_name, doc_id, id]
+                    );
+                }
+                return NextResponse.json({ success: true, message: 'FAQ entry already exists.', id });
+            }
             const [result] = await conn.query(
                 'INSERT INTO `faq_entries` (`question`, `answer`, `section`, `doc_id`, `doc_name`) VALUES (?, ?, ?, ?, ?)',
                 [question, answer, section, doc_id, doc_name]
