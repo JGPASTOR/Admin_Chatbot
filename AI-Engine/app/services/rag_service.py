@@ -464,3 +464,114 @@ def retrieve_context(query: str, top_k: int = 3) -> Optional[str]:
 def is_ready() -> bool:
     """Return True if the RAG index is loaded and ready to use."""
     return _rag_ready
+
+
+# ── FAQ / Curated Answer Cache ────────────────────────────────────────────────
+# Loaded at startup from the faq_entries DB table.
+# Questions are embedded once; at query time we do a cosine-similarity check
+# and return the stored answer directly if similarity ≥ FAQ_THRESHOLD.
+_faq_lock = threading.Lock()
+_faq_ids: List[int] = []
+_faq_questions: List[str] = []
+_faq_answers: List[str] = []
+_faq_embeddings = None  # np.ndarray shape (N, dim) or None
+
+FAQ_THRESHOLD = 0.72  # minimum cosine similarity to treat as a FAQ match
+
+
+def load_faqs(entries: list) -> None:
+    """
+    Populate the in-memory FAQ cache from a list of (id, question, answer) tuples.
+    Call this at startup after the embedding model is loaded.
+    """
+    global _faq_ids, _faq_questions, _faq_answers, _faq_embeddings
+
+    if not entries:
+        return
+
+    if _embedding_model is None:
+        logger.warning("[FAQ] Embedding model not ready — FAQ cache not loaded.")
+        return
+
+    ids, questions, answers = zip(*entries)
+    embeddings = _embedding_model.encode(list(questions), convert_to_numpy=True)
+
+    with _faq_lock:
+        _faq_ids = list(ids)
+        _faq_questions = list(questions)
+        _faq_answers = list(answers)
+        _faq_embeddings = embeddings
+
+    logger.info(f"[FAQ] Loaded {len(ids)} curated Q&A entries into cache.")
+
+
+def add_faq_to_cache(faq_id: int, question: str, answer: str) -> None:
+    """Add a single FAQ entry to the in-memory cache."""
+    global _faq_ids, _faq_questions, _faq_answers, _faq_embeddings
+
+    if _embedding_model is None:
+        return
+
+    new_emb = _embedding_model.encode([question], convert_to_numpy=True)
+
+    with _faq_lock:
+        _faq_ids.append(faq_id)
+        _faq_questions.append(question)
+        _faq_answers.append(answer)
+        if _faq_embeddings is None:
+            _faq_embeddings = new_emb
+        else:
+            _faq_embeddings = np.vstack([_faq_embeddings, new_emb])
+
+    logger.info(f"[FAQ] Added FAQ id={faq_id} to cache.")
+
+
+def remove_faq_from_cache(faq_id: int) -> None:
+    """Remove a FAQ entry from the in-memory cache by its DB id."""
+    global _faq_ids, _faq_questions, _faq_answers, _faq_embeddings
+
+    with _faq_lock:
+        if faq_id not in _faq_ids:
+            return
+        idx = _faq_ids.index(faq_id)
+        _faq_ids.pop(idx)
+        _faq_questions.pop(idx)
+        _faq_answers.pop(idx)
+        if _faq_embeddings is not None and _faq_embeddings.shape[0] > 0:
+            _faq_embeddings = np.delete(_faq_embeddings, idx, axis=0)
+            if _faq_embeddings.shape[0] == 0:
+                _faq_embeddings = None
+
+    logger.info(f"[FAQ] Removed FAQ id={faq_id} from cache.")
+
+
+def faq_lookup(query: str) -> Optional[str]:
+    """
+    Check if the query semantically matches any curated FAQ question.
+    Returns the stored answer if similarity >= FAQ_THRESHOLD, else None.
+    """
+    global _faq_embeddings, _faq_answers, _embedding_model
+
+    if _embedding_model is None or _faq_embeddings is None or len(_faq_answers) == 0:
+        return None
+
+    try:
+        from sklearn.metrics.pairwise import cosine_similarity as cos_sim
+
+        with _faq_lock:
+            emb_snapshot = _faq_embeddings.copy()
+            answers_snapshot = list(_faq_answers)
+
+        query_emb = _embedding_model.encode([query], convert_to_numpy=True)
+        sims = cos_sim(query_emb, emb_snapshot)[0]
+        best_idx = int(np.argmax(sims))
+        best_score = float(sims[best_idx])
+
+        if best_score >= FAQ_THRESHOLD:
+            logger.info(f"[FAQ] Match found (score={best_score:.3f}) for query: '{query[:60]}'")
+            return answers_snapshot[best_idx]
+
+        return None
+    except Exception as e:
+        logger.error(f"[FAQ] Lookup failed: {e}")
+        return None

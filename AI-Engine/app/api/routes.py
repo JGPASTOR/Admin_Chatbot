@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as DBSession
 
 from app.db.database import get_db
-from app.db.models import TrainingData
+from app.db.models import TrainingData, FAQEntry
 from app.schemas.chat import (
     ChatRequest, ChatResponse,
     TrainRequest, TrainResponse,
@@ -19,6 +19,7 @@ from app.schemas.chat import (
     RagDeleteRequest, RagDeleteResponse,
     RagRebuildResponse,
     TopicSelectRequest, TopicSelectResponse,
+    FAQCreateRequest, FAQUpdateRequest, FAQListResponse, FAQDeleteResponse,
 )
 from app.services import rag_service
 from app.services.conversation import process_message, stream_message, classifier
@@ -348,3 +349,109 @@ async def rag_rebuild(request: Request):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Rebuild failed: {str(e)}")
+
+
+# ── FAQ / Curated Answer Endpoints ────────────────────────────────────────────
+
+@router.post("/faq", response_model=dict)
+@limiter.limit("30/minute")
+async def faq_create(request: Request, payload: FAQCreateRequest, db: DBSession = Depends(get_db)):
+    """
+    Save a curated Q&A pair to the database and immediately load it into
+    the in-memory FAQ cache so the bot can use it without restarting.
+
+    The bot checks FAQ entries before RAG. When a user's question matches a
+    FAQ entry (≥72% semantic similarity), the stored answer is returned directly.
+    """
+    from datetime import datetime, timezone
+    entry = FAQEntry(
+        question=payload.question,
+        answer=payload.answer,
+        section=payload.section,
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+
+    # Hot-load into the in-memory cache so it's available immediately
+    rag_service.add_faq_to_cache(entry.id, entry.question, entry.answer)
+
+    return {
+        "success": True,
+        "message": "FAQ entry saved and loaded into bot memory.",
+        "id": entry.id,
+        "question": entry.question,
+        "answer": entry.answer,
+        "section": entry.section,
+    }
+
+
+@router.get("/faq", response_model=FAQListResponse)
+@limiter.limit("30/minute")
+async def faq_list(request: Request, db: DBSession = Depends(get_db)):
+    """List all curated FAQ entries."""
+    entries = db.query(FAQEntry).order_by(FAQEntry.created_at.desc()).all()
+    return FAQListResponse(
+        success=True,
+        total=len(entries),
+        entries=[
+            {
+                "id": e.id,
+                "question": e.question,
+                "answer": e.answer,
+                "section": e.section,
+                "created_at": e.created_at.isoformat(),
+                "updated_at": e.updated_at.isoformat(),
+            }
+            for e in entries
+        ],
+    )
+
+
+@router.put("/faq/{faq_id}", response_model=dict)
+@limiter.limit("30/minute")
+async def faq_update(request: Request, faq_id: int, payload: FAQUpdateRequest, db: DBSession = Depends(get_db)):
+    """
+    Update an existing FAQ entry. Refreshes the in-memory cache automatically.
+    """
+    entry = db.query(FAQEntry).filter(FAQEntry.id == faq_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"FAQ entry {faq_id} not found.")
+
+    if payload.question is not None:
+        entry.question = payload.question
+    if payload.answer is not None:
+        entry.answer = payload.answer
+    if payload.section is not None:
+        entry.section = payload.section
+
+    db.commit()
+    db.refresh(entry)
+
+    # Rebuild cache entry: remove old, add updated
+    rag_service.remove_faq_from_cache(faq_id)
+    rag_service.add_faq_to_cache(entry.id, entry.question, entry.answer)
+
+    return {
+        "success": True,
+        "message": "FAQ entry updated.",
+        "id": entry.id,
+        "question": entry.question,
+        "answer": entry.answer,
+        "section": entry.section,
+    }
+
+
+@router.delete("/faq/{faq_id}", response_model=FAQDeleteResponse)
+@limiter.limit("30/minute")
+async def faq_delete(request: Request, faq_id: int, db: DBSession = Depends(get_db)):
+    """Delete a FAQ entry and remove it from the bot's memory immediately."""
+    entry = db.query(FAQEntry).filter(FAQEntry.id == faq_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"FAQ entry {faq_id} not found.")
+
+    db.delete(entry)
+    db.commit()
+    rag_service.remove_faq_from_cache(faq_id)
+
+    return FAQDeleteResponse(success=True, message=f"FAQ entry {faq_id} deleted.")

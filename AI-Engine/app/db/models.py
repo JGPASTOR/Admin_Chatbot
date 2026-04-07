@@ -58,3 +58,19 @@ class TrainingData(Base):
 
     def __repr__(self):
         return f"<TrainingData(id={self.id}, intent={self.intent})>"
+
+
+class FAQEntry(Base):
+    """Curated Q&A pairs. Checked before RAG — guarantees exact, correct answers."""
+    __tablename__ = "faq_entries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    question = Column(Text, nullable=False)   # The canonical question (used for semantic matching)
+    answer = Column(Text, nullable=False)     # The exact answer to return
+    section = Column(String(100), nullable=True, index=True)  # Optional label e.g. "Section 3"
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+    def __repr__(self):
+        return f"<FAQEntry(id={self.id}, section={self.section})>"

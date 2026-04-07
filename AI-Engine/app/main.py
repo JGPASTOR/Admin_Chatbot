@@ -8,7 +8,7 @@ from slowapi.errors import RateLimitExceeded
 from app.config import settings
 from app.api.routes import router
 from app.db.database import engine
-from app.db.models import Base
+from app.db.models import Base, FAQEntry
 from app.services.conversation import classifier
 from app.services import rag_service
 from app.services.llm_client import close_stream_client
@@ -50,6 +50,17 @@ async def lifespan(app: FastAPI):
             print("✅ RAG knowledge base ready (Synced from Admin API)")
         else:
             print("⚠️  RAG initialization failed — will answer without document context")
+
+    # Load curated FAQ entries into the in-memory cache
+    from app.db.database import SessionLocal
+    db_session = SessionLocal()
+    try:
+        faq_rows = db_session.query(FAQEntry).all()
+        if faq_rows:
+            rag_service.load_faqs([(r.id, r.question, r.answer) for r in faq_rows])
+            print(f"✅ FAQ cache loaded ({len(faq_rows)} curated entries)")
+    finally:
+        db_session.close()
 
     yield
 

@@ -70,6 +70,7 @@ class PipelineResult:
     context: dict
     document: Optional[Dict[str, Any]]
     rag_context: Optional[str]
+    faq_answer: Optional[str] = field(default=None)  # curated answer — returned directly if set
 
 
 async def _run_pipeline(
@@ -132,9 +133,14 @@ async def _run_pipeline(
     if "pdid" in entities:
         document = await get_document(entities["pdid"])
 
-    # 5b. RAG retrieval — fetch relevant document context
+    # 5b. FAQ lookup — check curated answers before hitting raw RAG chunks
+    faq_answer = None
+    if settings.USE_RAG and rag_service.is_ready() and topic != "docs" and not document:
+        faq_answer = rag_service.faq_lookup(message)
+
+    # 5c. RAG retrieval — fetch relevant document context (skipped when FAQ matched)
     rag_context = None
-    if settings.USE_RAG and rag_service.is_ready() and topic != "docs":
+    if not faq_answer and settings.USE_RAG and rag_service.is_ready() and topic != "docs":
         if not document and intent in ("lgu_query", "tourism_query", "unknown", "document_status", "follow_up", "help", "complaint"):
             rag_context = rag_service.retrieve_context(
                 query=message,
@@ -160,6 +166,7 @@ async def _run_pipeline(
         context=context,
         document=document,
         rag_context=rag_context,
+        faq_answer=faq_answer,
     )
 
 
@@ -189,6 +196,18 @@ async def process_message(
         Dict with reply, session_id, intent, confidence, entities
     """
     p = await _run_pipeline(db, message, session_id, topic)
+
+    # ── FAQ short-circuit: curated answer available → return it directly ──
+    if p.faq_answer:
+        log_message(db, p.session.id, "user", message, p.intent, p.confidence, p.entities)
+        log_message(db, p.session.id, "bot", p.faq_answer)
+        return {
+            "reply": p.faq_answer,
+            "session_id": p.session.id,
+            "intent": p.intent,
+            "confidence": round(p.confidence, 4),
+            "entities": p.entities,
+        }
 
     # ── Hard guard: PDID provided but not found in DTS → skip LLM entirely ──
     if "pdid" in p.entities and not p.document:
@@ -251,6 +270,21 @@ async def stream_message(
         "entities": p.entities,
     }
     yield f"data: {json.dumps(metadata)}\n\n"
+
+    # ── FAQ short-circuit: curated answer → stream it directly ──
+    if p.faq_answer:
+        log_message(db, p.session.id, "user", message, p.intent, p.confidence, p.entities)
+        log_message(db, p.session.id, "bot", p.faq_answer)
+        yield f"data: {json.dumps({'text': p.faq_answer})}\n\n"
+        done_meta = json.dumps({
+            "session_id": p.session.id,
+            "intent": p.intent,
+            "confidence": round(p.confidence, 4),
+            "entities": p.entities,
+            "language": language,
+        })
+        yield f"data: [DONE]{done_meta}\n\n"
+        return
 
     # ── Hard guard: PDID provided but not found in DTS → skip LLM entirely ──
     if "pdid" in p.entities and not p.document:

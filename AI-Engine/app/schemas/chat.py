@@ -123,3 +123,40 @@ class TopicSelectResponse(BaseModel):
     reply: str = Field(..., description="Welcome message for the selected topic")
     session_id: str = Field(..., description="Session ID to use for subsequent chat messages")
     topic: str = Field(..., description="The confirmed selected topic")
+
+
+class FAQCreateRequest(BaseModel):
+    """Request body for POST /api/faq — save a curated Q&A pair."""
+    question: str = Field(..., min_length=5, description="The canonical question (used for semantic matching)")
+    answer: str = Field(..., min_length=5, description="The exact answer the bot should return")
+    section: Optional[str] = Field(None, description="Optional label, e.g. 'Section 3'")
+
+
+class FAQUpdateRequest(BaseModel):
+    """Request body for PUT /api/faq/{id} — update a curated Q&A pair."""
+    question: Optional[str] = Field(None, min_length=5)
+    answer: Optional[str] = Field(None, min_length=5)
+    section: Optional[str] = None
+
+
+class FAQResponse(BaseModel):
+    """Single FAQ entry."""
+    id: int
+    question: str
+    answer: str
+    section: Optional[str]
+    created_at: str
+    updated_at: str
+
+
+class FAQListResponse(BaseModel):
+    """Response body for GET /api/faq."""
+    success: bool
+    total: int
+    entries: list
+
+
+class FAQDeleteResponse(BaseModel):
+    """Response body for DELETE /api/faq/{id}."""
+    success: bool
+    message: str
