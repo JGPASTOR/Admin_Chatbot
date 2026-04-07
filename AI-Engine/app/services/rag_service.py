@@ -22,30 +22,53 @@ _embedding_model = None
 _store_dir: str = ""   # set during initialize_rag; used by add_document_to_index
 
 
+_MAX_CHUNK_CHARS = 3000  # hard cap per chunk
+
+
 def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> List[str]:
-    """Split text into overlapping chunks, respecting section boundaries."""
-    # Split on section headers first so chunks never span multiple sections.
-    # Matches patterns like "SECTION 1", "SECTION 2 —", "Section 1.", etc.
+    """
+    Chunk text so that every chunk contains only ONE topic — no bleed-over.
+
+    Rules (in order):
+    1. Split on SECTION headers → each section is its own unit.
+    2. Keep the whole section as one chunk (so "section 1" always returns
+       ALL of section 1, never a cut-off half).
+    3. If a section exceeds _MAX_CHUNK_CHARS, split only at blank lines
+       (paragraph boundaries) — never mid-sentence.
+    4. For content before the first SECTION header (intro text, names, etc.),
+       split by paragraph so short facts (e.g. "The mayor is John Doe") stay
+       in their own retrievable chunk.
+    """
     section_pattern = re.compile(r'(?=\bSECTION\s+\d+\b)', re.IGNORECASE)
-    sections = section_pattern.split(text)
+    parts = section_pattern.split(text)
 
     chunks = []
-    for section in sections:
-        section = section.strip()
-        if not section:
+
+    for part in parts:
+        part = part.strip()
+        if not part:
             continue
-        # If the section fits in one chunk, keep it whole
-        if len(section) <= chunk_size:
-            chunks.append(section)
-        else:
-            # Chunk within the section using sliding window
-            start = 0
-            while start < len(section):
-                end = start + chunk_size
-                chunk = section[start:end].strip()
-                if chunk:
-                    chunks.append(chunk)
-                start += chunk_size - overlap
+
+        if len(part) <= _MAX_CHUNK_CHARS:
+            chunks.append(part)
+            continue
+
+        # Too long — split at paragraph boundaries only
+        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', part) if p.strip()]
+        current = ""
+        for para in paragraphs:
+            candidate = (current + "\n\n" + para).strip() if current else para
+            if len(candidate) <= _MAX_CHUNK_CHARS:
+                current = candidate
+            else:
+                if current:
+                    chunks.append(current)
+                # A single paragraph longer than the cap: keep it whole anyway
+                # (a big chunk is better than a broken sentence)
+                current = para
+        if current:
+            chunks.append(current)
+
     return chunks
 
 

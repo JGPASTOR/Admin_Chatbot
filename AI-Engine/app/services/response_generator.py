@@ -509,10 +509,10 @@ def generate_response(
     # single most relevant chunk (first in the list — already ranked by score).
     # Showing all chunks produces unrelated sections that confuse the user.
     if rag_context:
+        # Show the full top-ranked chunk — sections are now kept whole so this
+        # IS the complete answer, not a cut-off fragment.
         top_chunk = rag_context.split("\n\n---\n\n")[0].strip()
-        # Show only the first paragraph of the chunk (before any subheadings or blank lines)
-        first_para = top_chunk.split("\n\n")[0].strip()
-        return first_para
+        return top_chunk
 
     # ── Help ─────────────────────────────────────────────────────────────────
     if intent == "help":
