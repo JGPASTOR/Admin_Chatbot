@@ -161,22 +161,13 @@ export default function FAQPage() {
         setProposals([]);
         setSelectedProposals(new Set());
         try {
-            // Fetch full doc to get extracted text
-            const docRes = await fetch(`/api/general-documents/${selectedDocId}`);
-            const docData = await docRes.json();
-            if (!docData.success) throw new Error('Could not fetch document.');
-
-            const extracted = docData.data.extracted_data;
-            const text = (typeof extracted === 'object' ? extracted.text : '') || '';
-            if (!text.trim()) throw new Error('This document has no extracted text to parse.');
-
             const sugRes = await fetch('/api/faq/suggest', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text, filename: docData.data.original_name }),
+                body: JSON.stringify({ doc_id: Number(selectedDocId) }),
             });
             const sugData = await sugRes.json();
-            if (!sugData.success) throw new Error(sugData.error || 'Failed to generate suggestions.');
+            if (!sugData.success) throw new Error(sugData.error || 'Failed to extract sections.');
 
             if (sugData.proposals.length === 0) {
                 flash('No sections found in this document. Make sure it has SECTION headers.', true);
