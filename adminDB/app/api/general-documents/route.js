@@ -88,7 +88,7 @@ function inferLabel(chunk) {
     // Title-case line without period
     if (firstLine.length < 80 && !firstLine.endsWith('.') && lines.length > 1)
         return { label: firstLine.slice(0, 60), topic: firstLine };
-    return { label: firstLine.slice(0, 60), topic: firstLine.slice(0, 80) };
+    return { label: firstLine.slice(0, 60), topic: firstLine };
 }
 
 /**

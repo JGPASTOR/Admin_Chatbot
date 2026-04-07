@@ -26,11 +26,16 @@ export async function PUT(request, { params }) {
             );
             await pool.query("UPDATE pending_faqs SET status = 'approved' WHERE id = ?", [id]);
 
-            // Notify AI Engine
+            // Push new entry into AI Engine's in-memory cache
             try {
                 const aiUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
-                await fetch(`${aiUrl}/api/faq`, { signal: AbortSignal.timeout(5000) });
-            } catch { /* non-fatal */ }
+                await fetch(`${aiUrl}/api/faq`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question: finalQ, answer: finalA, section: finalS }),
+                    signal: AbortSignal.timeout(5000),
+                });
+            } catch { /* non-fatal — bot picks it up on next restart */ }
 
             return NextResponse.json({ success: true, action: 'approved' });
         }

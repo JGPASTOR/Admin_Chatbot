@@ -36,6 +36,7 @@ export async function POST(request) {
             return NextResponse.json({ success: false, error: 'ids array is required.' }, { status: 400 });
         }
 
+        const aiUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
         const conn = await pool.getConnection();
         try {
             let approved = 0;
@@ -58,13 +59,17 @@ export async function POST(request) {
                 // Mark as approved
                 await conn.query("UPDATE pending_faqs SET status = 'approved' WHERE id = ?", [id]);
                 approved++;
-            }
 
-            // Notify AI Engine to reload FAQ cache
-            try {
-                const aiUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
-                await fetch(`${aiUrl}/api/faq`, { signal: AbortSignal.timeout(5000) });
-            } catch { /* non-fatal */ }
+                // Push into AI Engine's in-memory cache immediately
+                try {
+                    await fetch(`${aiUrl}/api/faq`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ question, answer, section: section || null }),
+                        signal: AbortSignal.timeout(5000),
+                    });
+                } catch { /* non-fatal */ }
+            }
 
             return NextResponse.json({ success: true, approved });
         } finally {
