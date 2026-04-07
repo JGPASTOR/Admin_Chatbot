@@ -74,6 +74,7 @@ export default function FAQPage() {
     const [proposals, setProposals] = useState([]);
     const [selectedProposals, setSelectedProposals] = useState(new Set());
     const [savingProposals, setSavingProposals] = useState(false);
+    const [editedQuestions, setEditedQuestions] = useState({});
 
     const loadEntries = () => {
         setLoading(true);
@@ -173,8 +174,9 @@ export default function FAQPage() {
                 flash('No sections found in this document. Make sure it has SECTION headers.', true);
             } else {
                 setProposals(sugData.proposals);
-                // Select all by default
-                setSelectedProposals(new Set(sugData.proposals.map((_, i) => i)));
+                setEditedQuestions({});
+                // Select none by default — admin reviews and picks
+                setSelectedProposals(new Set());
             }
         } catch (err) { flash(err.message, true); }
         finally { setGenerating(false); }
@@ -200,10 +202,11 @@ export default function FAQPage() {
         let saved = 0;
         for (const p of toSave) {
             try {
+                const question = editedQuestions[p.index] ?? p.question;
                 const res = await fetch('/api/faq', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ question: p.question, answer: p.answer, section: p.section }),
+                    body: JSON.stringify({ question, answer: p.answer, section: p.section }),
                 });
                 if (res.ok) saved++;
             } catch { /* skip */ }
@@ -211,6 +214,7 @@ export default function FAQPage() {
         flash(`Saved ${saved} FAQ entries. The bot can now answer these questions.`);
         setProposals([]);
         setSelectedProposals(new Set());
+        setEditedQuestions({});
         loadEntries();
         setSavingProposals(false);
     };
@@ -243,7 +247,7 @@ export default function FAQPage() {
                         Generate from Document
                     </div>
                     <div style={{ color: 'var(--text-2)', fontSize: 12, marginBottom: 14 }}>
-                        Pick an uploaded document — the system will extract every section and suggest FAQ entries for you to review and save.
+                        Pick an uploaded document — the system extracts <strong>all content</strong> (sections, paragraphs, lists, tables) and proposes FAQ entries. Check the ones you want, edit the question if needed, then save.
                     </div>
                     <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                         <select
@@ -257,7 +261,7 @@ export default function FAQPage() {
                             ))}
                         </select>
                         <button style={btnGreen(generating || !selectedDocId)} onClick={handleGenerate} disabled={generating || !selectedDocId}>
-                            {generating ? 'Extracting sections...' : 'Extract Sections'}
+                            {generating ? 'Extracting content...' : 'Extract All Content'}
                         </button>
                     </div>
 
@@ -266,7 +270,7 @@ export default function FAQPage() {
                         <div style={{ marginTop: 20 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                                 <div style={{ fontWeight: 600, fontSize: 13 }}>
-                                    {proposals.length} sections found — review and save:
+                                    {proposals.length} chunks found — check what you want to save:
                                 </div>
                                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                                     <button style={btnSecondary} onClick={toggleAllProposals}>
@@ -285,33 +289,38 @@ export default function FAQPage() {
                             {proposals.map((p, idx) => (
                                 <div key={idx} style={{
                                     border: `1.5px solid ${selectedProposals.has(idx) ? 'var(--primary-accent)' : 'var(--border)'}`,
-                                    borderRadius: 8, padding: 14, marginBottom: 10,
+                                    borderRadius: 8, padding: 14, marginBottom: 8,
                                     background: selectedProposals.has(idx) ? '#f0fdf4' : 'var(--surface-2)',
-                                    cursor: 'pointer',
-                                }} onClick={() => toggleProposal(idx)}>
+                                }}>
                                     <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
                                         <input
                                             type="checkbox"
                                             checked={selectedProposals.has(idx)}
                                             onChange={() => toggleProposal(idx)}
-                                            onClick={e => e.stopPropagation()}
-                                            style={{ marginTop: 3, flexShrink: 0, accentColor: 'var(--primary)' }}
+                                            style={{ marginTop: 4, flexShrink: 0, accentColor: 'var(--primary)', cursor: 'pointer' }}
                                         />
                                         <div style={{ flex: 1 }}>
-                                            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
-                                                <span style={{
-                                                    background: '#dcfce7', color: 'var(--primary)', borderRadius: 5,
-                                                    padding: '1px 8px', fontSize: 11, fontWeight: 600, textTransform: 'uppercase',
-                                                }}>{p.section}</span>
+                                            {/* Label */}
+                                            <span style={{
+                                                display: 'inline-block', background: '#dcfce7', color: 'var(--primary)',
+                                                borderRadius: 5, padding: '1px 8px', fontSize: 10, fontWeight: 600,
+                                                textTransform: 'uppercase', marginBottom: 6,
+                                            }}>{p.section}</span>
+
+                                            {/* Editable question */}
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                                                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-3)', flexShrink: 0 }}>Q:</span>
+                                                <input
+                                                    style={{ ...inputStyle, padding: '5px 8px', fontSize: 12, background: '#fff' }}
+                                                    value={editedQuestions[p.index] ?? p.question}
+                                                    onChange={e => setEditedQuestions(prev => ({ ...prev, [p.index]: e.target.value }))}
+                                                    onClick={e => e.stopPropagation()}
+                                                />
                                             </div>
-                                            <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)', marginBottom: 4 }}>
-                                                Q: {p.question}
-                                            </div>
-                                            <div style={{
-                                                fontSize: 12, color: 'var(--text-2)', lineHeight: 1.55,
-                                                maxHeight: 80, overflow: 'hidden', position: 'relative',
-                                            }}>
-                                                {p.answer.slice(0, 300)}{p.answer.length > 300 ? '...' : ''}
+
+                                            {/* Answer preview */}
+                                            <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5 }}>
+                                                {p.preview}
                                             </div>
                                         </div>
                                     </div>
