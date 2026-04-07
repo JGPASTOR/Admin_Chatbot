@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import Header from '../../components/Header';
+import TrainingTabs from '../../components/TrainingTabs';
 
 function formatDate(dateStr) {
     if (!dateStr) return '—';
@@ -281,6 +282,11 @@ export default function FAQPage() {
         if (toSave.length === 0) return flash('Select at least one entry to save.', true);
         setSavingProposals(true);
         let saved = 0;
+        // Always resolve doc_name — fall back to the docs list if state is somehow stale
+        const resolvedDocName =
+            selectedDocName ||
+            docs.find(d => String(d.id) === String(selectedDocId))?.original_name ||
+            null;
         for (const p of toSave) {
             try {
                 const q = editedQuestions[p.index] ?? p.question;
@@ -291,10 +297,8 @@ export default function FAQPage() {
                         question: q,
                         answer: p.answer,
                         section: p.section,
-                        // Preserve source document so entries appear under the correct
-                        // document folder in the FAQ Browser (not under Manual Entries).
                         doc_id: selectedDocId ? Number(selectedDocId) : null,
-                        doc_name: selectedDocName || null,
+                        doc_name: resolvedDocName,
                     }),
                 });
                 if (res.ok) saved++;
@@ -313,8 +317,9 @@ export default function FAQPage() {
 
     return (
         <div style={{ marginLeft: 'var(--sidebar-w)', minHeight: '100vh', background: 'var(--bg)' }}>
-            <Header title="FAQ / Bot Training" />
+            <Header title="FAQ Manager" />
             <main style={{ padding: '24px 32px', maxWidth: 960 }}>
+                <TrainingTabs />
 
                 {/* Info banner */}
                 <div style={{ ...card, background: '#f0fdf4', border: '1px solid #bbf7d0', marginBottom: 24, padding: '16px 20px' }}>

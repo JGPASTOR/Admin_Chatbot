@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import Header from '../../../components/Header';
+import TrainingTabs from '../../../components/TrainingTabs';
 
 function formatDate(d) {
     if (!d) return '—';
@@ -94,6 +95,7 @@ export default function FAQBrowsePage() {
         <div style={{ marginLeft: 'var(--sidebar-w)', minHeight: '100vh', background: 'var(--bg)' }}>
             <Header title="FAQ Browser" />
             <main style={{ padding: '24px 32px', maxWidth: 960 }}>
+                <TrainingTabs />
 
                 {/* Top bar */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>

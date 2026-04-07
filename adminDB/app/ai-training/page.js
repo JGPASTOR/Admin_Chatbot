@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
 import Header from '../../components/Header';
+import TrainingTabs from '../../components/TrainingTabs';
 
 const FILE_ICONS = { pdf: '📄', docx: '📝', doc: '📝', xlsx: '📊', xls: '📊' };
 
@@ -255,6 +256,7 @@ export default function AITrainingPage() {
                 subtitle="Upload documents, review auto-generated Q&A proposals, and train the bot"
             />
             <main style={{ padding: '24px 28px', flex: 1, maxWidth: 1100 }}>
+                <TrainingTabs />
 
                 {/* Flash */}
                 {flash && (
