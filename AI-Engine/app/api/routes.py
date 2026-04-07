@@ -354,6 +354,131 @@ async def rag_rebuild(request: Request):
 
 # ── FAQ / Curated Answer Endpoints ────────────────────────────────────────────
 
+@router.post("/faq/generate", response_model=dict)
+@limiter.limit("5/minute")
+async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
+    """
+    LLM-powered FAQ generation from document text.
+
+    Instead of dumb regex templates, this sends document chunks to the local
+    LLM (Ollama) and asks it to generate specific, high-quality Q&A pairs
+    with a confidence score (1-10).
+
+    Confidence thresholds:
+      ≥ 8 → auto-approve (goes straight to faq_entries, no manual review)
+      5-7 → pending review in admin
+      < 5 → discarded (never stored)
+
+    Falls back gracefully if the LLM is unavailable.
+    """
+    import httpx
+    import json as json_lib
+    from app.services.rag_service import _chunk_text
+
+    text = payload.text.strip()
+    filename = payload.filename or "document"
+
+    if not text:
+        return {"success": True, "pairs": [], "total": 0}
+
+    # Step 1: Chunk the document using the same strategy as the RAG index
+    chunks = _chunk_text(text)
+    chunks = [c.strip() for c in chunks if len(c.strip()) >= 120]
+
+    # Take first 15 most informative chunks (avoids LLM timeout on huge docs)
+    selected = chunks[:15]
+
+    if not selected:
+        return {"success": True, "pairs": [], "total": 0}
+
+    llm_url = os.environ.get("LLM_SERVICE_URL", "http://localhost:8001")
+    all_pairs = []
+
+    system_prompt = (
+        "You are an expert FAQ creator for a Philippine local government chatbot (Surigao City). "
+        "Given text excerpts from official government documents, generate specific Q&A pairs "
+        "that citizens would actually ask.\n\n"
+        "STRICT RULES:\n"
+        "1. Questions must be fully answerable from the given text — never guess\n"
+        "2. Answers must come DIRECTLY from the text — no invented details\n"
+        "3. Rate each pair confidence 1-10 (9-10=crystal clear, 7-8=good, 5-6=acceptable, 1-4=skip)\n"
+        "4. Generate 1-3 Q&A pairs per chunk, or 0 if the chunk is just a title/header/signature\n"
+        "5. Return ONLY a valid JSON array — no markdown, no explanation outside the array\n"
+        "6. If no useful FAQ can be formed from a chunk, do NOT include anything for that chunk"
+    )
+
+    # Process in batches of 3 chunks (keeps prompts within Ollama context window)
+    batch_size = 3
+    for batch_idx in range(0, len(selected), batch_size):
+        batch = selected[batch_idx: batch_idx + batch_size]
+        numbered = "\n\n---\n\n".join(
+            f"[Excerpt {batch_idx + j + 1}]:\n{c}" for j, c in enumerate(batch)
+        )
+
+        prompt = (
+            f"Document: {filename}\n\n"
+            f"Text excerpts:\n{numbered}\n\n"
+            f"Generate FAQ pairs as a JSON array. Use this format:\n"
+            f'[{{"question": "What are the requirements?", "answer": "The requirements include...", '
+            f'"confidence": 8, "section": "Section 1"}}]\n\n'
+            f"Rules:\n"
+            f"- section field = label from the excerpt (e.g. 'Section 2', 'Eligibility')\n"
+            f"- Return [] if no useful FAQ can be formed\n"
+            f"- Return ONLY the JSON array, nothing else"
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                res = await client.post(
+                    f"{llm_url}/api/generate",
+                    json={"prompt": prompt, "system_prompt": system_prompt},
+                )
+                res.raise_for_status()
+                raw = res.json().get("response", "").strip()
+
+                # Extract JSON array — handles markdown code fences too
+                json_match = re.search(r'\[[\s\S]*?\]', raw)
+                if json_match:
+                    pairs = json_lib.loads(json_match.group(0))
+                    if isinstance(pairs, list):
+                        for p in pairs:
+                            if not isinstance(p, dict):
+                                continue
+                            q = str(p.get("question", "")).strip()
+                            a = str(p.get("answer", "")).strip()
+                            if not q or not a or len(a) < 10:
+                                continue
+                            conf = max(1, min(10, int(p.get("confidence", 5))))
+                            if conf < 5:
+                                continue  # discard low-quality pairs
+                            all_pairs.append({
+                                "question": q,
+                                "answer": a,
+                                "confidence": conf,
+                                "section": str(p.get("section", "")).strip(),
+                            })
+
+        except Exception as e:
+            logger.warning(f"[FAQ Generate] LLM batch {batch_idx // batch_size + 1} failed: {e}")
+            continue
+
+    # Deduplicate by lowercased question text
+    seen_q: set = set()
+    deduped = []
+    for p in all_pairs:
+        key = p["question"].lower().strip()
+        if key not in seen_q:
+            seen_q.add(key)
+            deduped.append(p)
+
+    # Sort by confidence descending, cap at 20 total proposals
+    deduped.sort(key=lambda x: x["confidence"], reverse=True)
+    final = deduped[:20]
+
+    logger.info(f"[FAQ Generate] {len(final)} quality pairs generated for '{filename}'")
+    return {"success": True, "pairs": final, "total": len(final)}
+
+
 @router.post("/faq/suggest", response_model=dict)
 @limiter.limit("20/minute")
 async def faq_suggest(request: Request, payload: FAQSuggestRequest):

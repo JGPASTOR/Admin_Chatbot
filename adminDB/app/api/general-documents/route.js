@@ -236,7 +236,7 @@ export async function POST(request) {
             console.warn('[Keywords] Failed to extract keywords:', kwErr.message);
         }
 
-        // ── Auto-generate pending FAQ proposals ──
+        // ── Auto-generate pending FAQ proposals (LLM-powered) ──
         try {
             let docText = '';
             if (extractedData?.text) {
@@ -248,21 +248,78 @@ export async function POST(request) {
             }
 
             if (docText) {
-                const chunks = chunkText(docText);
-                // Limit to first 50 semantic chunks
-                const limited = chunks.slice(0, 50);
-                const conn = await pool.getConnection();
+                const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
+                let pairs = [];
+
+                // ── Try LLM-powered generation first ──
                 try {
+                    const faqRes = await fetch(`${aiEngineUrl}/api/faq/generate`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ text: docText, filename: originalName }),
+                        signal: AbortSignal.timeout(120_000), // 2 min — LLM needs time
+                    });
+                    if (faqRes.ok) {
+                        const faqData = await faqRes.json();
+                        if (faqData.success && Array.isArray(faqData.pairs) && faqData.pairs.length > 0) {
+                            pairs = faqData.pairs;
+                            console.log(`[Auto-FAQ] LLM generated ${pairs.length} pairs for '${originalName}'.`);
+                        }
+                    }
+                } catch (llmErr) {
+                    console.warn('[Auto-FAQ] LLM unavailable, using rule-based fallback:', llmErr.message);
+                }
+
+                // ── Rule-based fallback (if LLM failed or returned nothing) ──
+                if (pairs.length === 0) {
+                    const chunks = chunkText(docText);
+                    const limited = chunks.slice(0, 30);
                     for (const chunk of limited) {
                         const { label, topic } = inferLabel(chunk);
                         const question = makeQuestion(topic, chunk);
-                        await conn.query(
-                            `INSERT INTO pending_faqs (doc_id, doc_name, section, question, answer, status)
-                             VALUES (?, ?, ?, ?, ?, 'pending')`,
-                            [docId, originalName, label, question, chunk]
-                        );
+                        pairs.push({ question, answer: chunk, confidence: 5, section: label });
                     }
-                    console.log(`[Auto-FAQ] Generated ${limited.length} proposals for '${originalName}'.`);
+                    console.log(`[Auto-FAQ] Rule-based fallback: ${pairs.length} proposals for '${originalName}'.`);
+                }
+
+                // ── Store proposals + auto-approve high-confidence ones ──
+                const conn = await pool.getConnection();
+                try {
+                    let autoApproved = 0;
+                    let pendingCount = 0;
+
+                    for (const pair of pairs) {
+                        const confidence = Number(pair.confidence ?? 5);
+                        // confidence >= 8 → auto-approve (goes directly to faq_entries, no manual review)
+                        // confidence 5-7 → pending (admin reviews)
+                        const status = confidence >= 8 ? 'approved' : 'pending';
+
+                        await conn.query(
+                            `INSERT INTO pending_faqs (doc_id, doc_name, section, question, answer, status, confidence_score)
+                             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                            [docId, originalName, pair.section || '', pair.question, pair.answer, status, confidence]
+                        );
+
+                        // Auto-approved pairs also go directly to faq_entries
+                        if (status === 'approved') {
+                            await conn.query(
+                                'INSERT INTO faq_entries (question, answer, section, doc_id, doc_name) VALUES (?, ?, ?, ?, ?)',
+                                [pair.question, pair.answer, pair.section || '', docId, originalName]
+                            );
+                            autoApproved++;
+                        } else {
+                            pendingCount++;
+                        }
+                    }
+
+                    console.log(`[Auto-FAQ] '${originalName}': ${autoApproved} auto-approved, ${pendingCount} pending review.`);
+
+                    // Notify AI Engine to reload FAQ cache if anything was auto-approved
+                    if (autoApproved > 0) {
+                        try {
+                            await fetch(`${aiEngineUrl}/api/faq`, { signal: AbortSignal.timeout(5000) });
+                        } catch { /* non-fatal */ }
+                    }
                 } finally {
                     conn.release();
                 }

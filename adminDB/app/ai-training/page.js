@@ -479,7 +479,7 @@ export default function AITrainingPage() {
                                         />
 
                                         <div style={{ flex: 1 }}>
-                                            {/* Source doc + section badges */}
+                                            {/* Source doc + section + confidence badges */}
                                             <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                                                 <span style={{ background: '#dbeafe', color: '#1d4ed8', borderRadius: 4, padding: '2px 8px', fontSize: 10, fontWeight: 600 }}>
                                                     {item.doc_name}
@@ -489,6 +489,18 @@ export default function AITrainingPage() {
                                                         {item.section}
                                                     </span>
                                                 )}
+                                                {item.confidence_score > 0 && (() => {
+                                                    const s = item.confidence_score;
+                                                    const [bg, color, label] =
+                                                        s >= 8 ? ['#bbf7d0', '#15803d', `AI ${s}/10`] :
+                                                        s >= 5 ? ['#fef08a', '#854d0e', `AI ${s}/10`] :
+                                                                 ['#fecaca', '#991b1b', `AI ${s}/10`];
+                                                    return (
+                                                        <span style={{ background: bg, color, borderRadius: 4, padding: '2px 8px', fontSize: 10, fontWeight: 700 }}>
+                                                            {label}
+                                                        </span>
+                                                    );
+                                                })()}
                                             </div>
 
                                             {/* Editable question */}

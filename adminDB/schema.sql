@@ -53,6 +53,25 @@ CREATE TABLE IF NOT EXISTS `faq_entries` (
   `question`   TEXT           NOT NULL,
   `answer`     TEXT           NOT NULL,
   `section`    VARCHAR(100)   DEFAULT NULL,
+  `doc_id`     INT            DEFAULT NULL,
+  `doc_name`   VARCHAR(255)   DEFAULT NULL,
   `created_at` DATETIME       DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME       DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- keywords column for general_documents (added after initial schema)
+ALTER TABLE `general_documents`
+  ADD COLUMN IF NOT EXISTS `keywords` JSON DEFAULT NULL;
+
+CREATE TABLE IF NOT EXISTS `pending_faqs` (
+  `id`               INT            NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `doc_id`           INT            DEFAULT NULL,
+  `doc_name`         VARCHAR(255)   DEFAULT NULL,
+  `section`          VARCHAR(100)   DEFAULT NULL,
+  `question`         TEXT           NOT NULL,
+  `answer`           TEXT           NOT NULL,
+  `status`           ENUM('pending','approved','rejected') DEFAULT 'pending',
+  `confidence_score` TINYINT        DEFAULT 0,   -- 1-10 from LLM; 0 = rule-based fallback
+  `created_at`       DATETIME       DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`       DATETIME       DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -1,6 +1,6 @@
 import { Inter } from "next/font/google";
 import "./globals.css";
-import Sidebar from "../components/Sidebar";
+import AppShell from "../components/AppShell";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -13,19 +13,7 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body style={{ fontFamily: inter.style.fontFamily }}>
-        <div style={{ display: 'flex', minHeight: '100vh' }}>
-          <Sidebar />
-          <div style={{
-            marginLeft: 'var(--sidebar-w)',
-            flex: 1,
-            display: 'flex',
-            flexDirection: 'column',
-            minHeight: '100vh',
-            background: 'var(--bg)',
-          }}>
-            {children}
-          </div>
-        </div>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );
