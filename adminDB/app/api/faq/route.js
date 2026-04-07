@@ -3,6 +3,23 @@ import { NextResponse } from 'next/server';
 
 const AI_ENGINE = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
 
+// Run once per process — guarantees the table exists regardless of restart order
+let _tableReady = false;
+async function ensureTable() {
+    if (_tableReady) return;
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS \`faq_entries\` (
+            \`id\`         INT          NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            \`question\`   TEXT         NOT NULL,
+            \`answer\`     TEXT         NOT NULL,
+            \`section\`    VARCHAR(100) DEFAULT NULL,
+            \`created_at\` DATETIME     DEFAULT CURRENT_TIMESTAMP,
+            \`updated_at\` DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    _tableReady = true;
+}
+
 // Tell the AI Engine to hot-reload its FAQ cache (fire-and-forget)
 async function notifyEngine(action, payload) {
     try {
@@ -22,6 +39,7 @@ async function notifyEngine(action, payload) {
 /* ── GET — list all FAQ entries ── */
 export async function GET() {
     try {
+        await ensureTable();
         const [rows] = await pool.query(
             'SELECT id, question, answer, section, created_at, updated_at FROM faq_entries ORDER BY created_at DESC'
         );
@@ -42,6 +60,7 @@ export async function GET() {
 /* ── POST — create a new FAQ entry ── */
 export async function POST(request) {
     try {
+        await ensureTable();
         const { question, answer, section } = await request.json();
         if (!question?.trim() || !answer?.trim()) {
             return NextResponse.json({ success: false, error: 'question and answer are required.' }, { status: 400 });
