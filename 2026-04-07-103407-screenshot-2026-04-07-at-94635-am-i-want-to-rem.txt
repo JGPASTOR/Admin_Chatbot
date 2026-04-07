@@ -1,0 +1,1849 @@
+╭─── Claude Code v2.1.92 ──────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                 Welcome back junj!                 │ started                 │
+│                                                    │ Run /init to create a … │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ Recent activity         │
+│                        ▘▘ ▝▝                       │ No recent activity      │
+│      Sonnet 4.6 · Claude Pro ·                     │                         │
+│      fuentesjunjie01@gmail.com's Organization      │                         │
+│            ~/Desktop/2026/Admin_Chatbot            │                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+❯ Screenshot 2026-04-07 at 9.46.35 AM i want to remove the reply here what i    
+found on our records, reply section 1 does supposedly end 2030 to 2040 not      
+include that  current official vision and etc                                   
+
+⏺ Let me view the screenshot first.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Now let me find where this response is generated in the codebase.
+
+  Searched for 5 patterns, read 1 file (ctrl+o to expand)
+
+⏺ Let me check the RAG data to understand the chunk content.
+
+  Searched for 7 patterns, read 1 file (ctrl+o to expand)
+
+⏺ I can see two things to fix:
+  1. Remove the "📋 Here's what I found in our records:" prefix
+  2. The chunk content should stop at "2023 to 2040" and not include the
+  "Current Official Vision Statement" block
+
+  Let me look at the context around that section more carefully.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Now I'll make both fixes:
+  1. Remove the prefix
+  2. Truncate the chunk to just the first paragraph (before "Current Official
+  Vision Statement")
+
+⏺ Update(AI-Engine/app/services/response_generator.py)
+  ⎿  Added 3 lines, removed 5 lines
+      509      # single most relevant chunk (first in the list — already 
+           ranked by score).
+      510      # Showing all chunks produces unrelated sections that conf
+           use the user.
+      511      if rag_context:
+      512 -        prefix = "📋 Here's what I found in our records:\n\n" 
+      513 -        if language == "tl":                                  
+      514 -            prefix = "📋 Narito ang nahanap ko sa aming mga re
+          -kord:\n\n"                                                    
+      515 -                                                              
+      512          top_chunk = rag_context.split("\n\n---\n\n")[0].strip(
+           )
+      517 -        return f"{prefix}{top_chunk}"                         
+      513 +        # Show only the first paragraph of the chunk (before a
+          +ny subheadings or blank lines)                                
+      514 +        first_para = top_chunk.split("\n\n")[0].strip()       
+      515 +        return first_para                                     
+      516  
+      517      # ── Help ────────────────────────────────────────────────
+           ─────────────────
+      518      if intent == "help":
+
+⏺ Done. Two changes made in response_generator.py:511-517:
+
+  1. Removed the "📋 Here's what I found in our records:" prefix (both English
+  and Tagalog versions)
+  2. Truncated the chunk to only the first paragraph — so for Section 1 LGU
+  Vision, it will stop after "...covering the planning period 2023 to 2040." and
+   won't include the "Current Official Vision Statement" block or the "History
+  of Surigao Ci..." section
+
+✻ Crunched for 1m 44s
+
+❯ git push                                                                      
+
+⏺ Bash(git status && git diff)
+  ⎿  main
+     unstaged: ~AI-Engine/app/services/response_generator.py
+     [lean-ctx: 88→15 tok, -83%]
+     … +2 lines (ctrl+o to expand)
+
+⏺ Bash(git add AI-Engine/app/services/response_generator.py && git commit -m
+      "$(cat <<'EOF'
+      fix: remove RAG fallback prefix and truncate chunk to first paragraph…)
+  ⎿  [main ed77fee] fix: remove RAG fallback prefix and truncate chunk to f
+     irst paragraph
+      1 file changed, 3 insertions(+), 5 deletions(-)
+
+⏺ Bash(git push)
+  ⎿  To https://github.com/JGPASTOR/Admin_Chatbot.git
+        762b3b7..ed77fee  main -> main
+
+⏺ Pushed. Commit ed77fee is now on main.
+
+❯ [Image #1] look when i ask tell me about what is section 3 , it wont answer,  
+it onnly give me the title of section, so how we can save claude, to train ai   
+engine  to answer? act as llm enginere so we can teach the ai engine what       
+suppose to reply and save on database so when real user ask it answer correct   
+precise                                                                         
+  ⎿  [Image #1]
+
+⏺ Let me explore the codebase to understand the data model and how to add a
+  training/FAQ system.
+
+  Read 4 files (ctrl+o to expand)
+
+⏺ Now I have a full picture of the system. Let me read the schemas and the rest
+  of conversation.py before designing the solution.
+
+  Read 3 files (ctrl+o to expand)
+
+⏺ Now I have a complete picture. Here's the engineering plan:
+
+  Root cause: When you ask "tell me section 3", RAG retrieves just the section
+  title chunk because that's the highest-similarity chunk. The LLM can expand it
+   when running, but when down — only the bare title shows. Also, my previous
+  first_para fix made it worse since the first paragraph IS just the title.
+
+  Solution: Build a FAQ / Curated Answer system:
+  - Admin saves Q&A pairs to the database via API
+  - At query time, the bot checks FAQs first using semantic similarity on the
+  question
+  - If a FAQ matches (≥75% similarity), the curated answer is returned directly
+  — no guessing, no LLM needed
+  - Falls through to normal RAG/LLM if no FAQ matches
+
+  Let me implement this across 6 files:
+
+  Read 1 file (ctrl+o to expand)
+⏺ Good. Now I have the full picture. Let me implement everything.
+
+  Step 1 — Add FAQEntry model:
+
+⏺ Update(AI-Engine/app/db/models.py)
+  ⎿  Added 16 lines
+      58  
+      59      def __repr__(self):
+      60          return f"<TrainingData(id={self.id}, intent={self.inten
+          t})>"
+      61 +                                                               
+      62 +                                                               
+      63 +class FAQEntry(Base):                                          
+      64 +    """Curated Q&A pairs. Checked before RAG — guarantees exact
+         +, correct answers."""                                          
+      65 +    __tablename__ = "faq_entries"                              
+      66 +                                                               
+      67 +    id = Column(Integer, primary_key=True, autoincrement=True) 
+      68 +    question = Column(Text, nullable=False)   # The canonical q
+         +uestion (used for semantic matching)                           
+      69 +    answer = Column(Text, nullable=False)     # The exact answe
+         +r to return                                                    
+      70 +    section = Column(String(100), nullable=True, index=True)  #
+         + Optional label e.g. "Section 3"                               
+      71 +    created_at = Column(DateTime, default=lambda: datetime.now(
+         +timezone.utc), nullable=False)                                 
+      72 +    updated_at = Column(DateTime, default=lambda: datetime.now(
+         +timezone.utc),                                                 
+      73 +                        onupdate=lambda: datetime.now(timezone.
+         +utc), nullable=False)                                          
+      74 +                                                               
+      75 +    def __repr__(self):                                        
+      76 +        return f"<FAQEntry(id={self.id}, section={self.section}
+         +)>"                                                            
+
+⏺ Step 2 — Add FAQ cache + faq_lookup to rag_service.py:
+
+⏺ Update(AI-Engine/app/services/rag_service.py)
+  ⎿  Added 112 lines, removed 1 line
+      463  
+      464  def is_ready() -> bool:
+      465      """Return True if the RAG index is loaded and ready to use
+           ."""
+      466 -    return _rag_ready                                         
+      466   No newline at end of file
+      467 +    return _rag_ready                                         
+      468 +                                                              
+      469 +                                                              
+      470 +# ── FAQ / Curated Answer Cache ──────────────────────────────
+          +──────────────────                                            
+      471 +# Loaded at startup from the faq_entries DB table.            
+      472 +# Questions are embedded once; at query time we do a cosine-si
+          +milarity check                                                
+      473 +# and return the stored answer directly if similarity ≥ FAQ_TH
+          +RESHOLD.                                                      
+      474 +_faq_lock = threading.Lock()                                  
+      475 +_faq_ids: List[int] = []                                      
+      476 +_faq_questions: List[str] = []                                
+      477 +_faq_answers: List[str] = []                                  
+      478 +_faq_embeddings = None  # np.ndarray shape (N, dim) or None   
+      479 +                                                              
+      480 +FAQ_THRESHOLD = 0.72  # minimum cosine similarity to treat as 
+          +a FAQ match                                                   
+      481 +                                                              
+      482 +                                                              
+      483 +def load_faqs(entries: list) -> None:                         
+      484 +    """                                                       
+      485 +    Populate the in-memory FAQ cache from a list of (id, quest
+          +ion, answer) tuples.                                          
+      486 +    Call this at startup after the embedding model is loaded. 
+      487 +    """                                                       
+      488 +    global _faq_ids, _faq_questions, _faq_answers, _faq_embedd
+          +ings                                                          
+      489 +                                                              
+      490 +    if not entries:                                           
+      491 +        return                                                
+      492 +                                                              
+      493 +    if _embedding_model is None:                              
+      494 +        logger.warning("[FAQ] Embedding model not ready — FAQ 
+          +cache not loaded.")                                           
+      495 +        return                                                
+      496 +                                                              
+      497 +    ids, questions, answers = zip(*entries)                   
+      498 +    embeddings = _embedding_model.encode(list(questions), conv
+          +ert_to_numpy=True)                                            
+      499 +                                                              
+      500 +    with _faq_lock:                                           
+      501 +        _faq_ids = list(ids)                                  
+      502 +        _faq_questions = list(questions)                      
+      503 +        _faq_answers = list(answers)                          
+      504 +        _faq_embeddings = embeddings                          
+      505 +                                                              
+      506 +    logger.info(f"[FAQ] Loaded {len(ids)} curated Q&A entries 
+          +into cache.")                                                 
+      507 +                                                              
+      508 +                                                              
+      509 +def add_faq_to_cache(faq_id: int, question: str, answer: str) 
+          +-> None:                                                      
+      510 +    """Add a single FAQ entry to the in-memory cache."""      
+      511 +    global _faq_ids, _faq_questions, _faq_answers, _faq_embedd
+          +ings                                                          
+      512 +                                                              
+      513 +    if _embedding_model is None:                              
+      514 +        return                                                
+      515 +                                                              
+      516 +    new_emb = _embedding_model.encode([question], convert_to_n
+          +umpy=True)                                                    
+      517 +                                                              
+      518 +    with _faq_lock:                                           
+      519 +        _faq_ids.append(faq_id)                               
+      520 +        _faq_questions.append(question)                       
+      521 +        _faq_answers.append(answer)                           
+      522 +        if _faq_embeddings is None:                           
+      523 +            _faq_embeddings = new_emb                         
+      524 +        else:                                                 
+      525 +            _faq_embeddings = np.vstack([_faq_embeddings, new_
+          +emb])                                                         
+      526 +                                                              
+      527 +    logger.info(f"[FAQ] Added FAQ id={faq_id} to cache.")     
+      528 +                                                              
+      529 +                                                              
+      530 +def remove_faq_from_cache(faq_id: int) -> None:               
+      531 +    """Remove a FAQ entry from the in-memory cache by its DB i
+          +d."""                                                         
+      532 +    global _faq_ids, _faq_questions, _faq_answers, _faq_embedd
+          +ings                                                          
+      533 +                                                              
+      534 +    with _faq_lock:                                           
+      535 +        if faq_id not in _faq_ids:                            
+      536 +            return                                            
+      537 +        idx = _faq_ids.index(faq_id)                          
+      538 +        _faq_ids.pop(idx)                                     
+      539 +        _faq_questions.pop(idx)                               
+      540 +        _faq_answers.pop(idx)                                 
+      541 +        if _faq_embeddings is not None and _faq_embeddings.sha
+          +pe[0] > 0:                                                    
+      542 +            _faq_embeddings = np.delete(_faq_embeddings, idx, 
+          +axis=0)                                                       
+      543 +            if _faq_embeddings.shape[0] == 0:                 
+      544 +                _faq_embeddings = None                        
+      545 +                                                              
+      546 +    logger.info(f"[FAQ] Removed FAQ id={faq_id} from cache.") 
+      547 +                                                              
+      548 +                                                              
+      549 +def faq_lookup(query: str) -> Optional[str]:                  
+      550 +    """                                                       
+      551 +    Check if the query semantically matches any curated FAQ qu
+          +estion.                                                       
+      552 +    Returns the stored answer if similarity >= FAQ_THRESHOLD, 
+          +else None.                                                    
+      553 +    """                                                       
+      554 +    global _faq_embeddings, _faq_answers, _embedding_model    
+      555 +                                                              
+      556 +    if _embedding_model is None or _faq_embeddings is None or 
+          +len(_faq_answers) == 0:                                       
+      557 +        return None                                           
+      558 +                                                              
+      559 +    try:                                                      
+      560 +        from sklearn.metrics.pairwise import cosine_similarity
+          + as cos_sim                                                   
+      561 +                                                              
+      562 +        with _faq_lock:                                       
+      563 +            emb_snapshot = _faq_embeddings.copy()             
+      564 +            answers_snapshot = list(_faq_answers)             
+      565 +                                                              
+      566 +        query_emb = _embedding_model.encode([query], convert_t
+          +o_numpy=True)                                                 
+      567 +        sims = cos_sim(query_emb, emb_snapshot)[0]            
+      568 +        best_idx = int(np.argmax(sims))                       
+      569 +        best_score = float(sims[best_idx])                    
+      570 +                                                              
+      571 +        if best_score >= FAQ_THRESHOLD:                       
+      572 +            logger.info(f"[FAQ] Match found (score={best_score
+          +:.3f}) for query: '{query[:60]}'")                            
+      573 +            return answers_snapshot[best_idx]                 
+      574 +                                                              
+      575 +        return None                                           
+      576 +    except Exception as e:                                    
+      577 +        logger.error(f"[FAQ] Lookup failed: {e}")             
+      578 +        return None                                           
+      579   No newline at end of file
+
+⏺ Step 3 — Update PipelineResult and _run_pipeline in conversation.py:
+
+⏺ Update(AI-Engine/app/services/conversation.py)
+  ⎿  Added 1 line
+      70      context: dict
+      71      document: Optional[Dict[str, Any]]
+      72      rag_context: Optional[str]
+      73 +    faq_answer: Optional[str] = field(default=None)  # curated 
+         +answer — returned directly if set                              
+      74  
+      75  
+      76  async def _run_pipeline(
+
+⏺ Now add the FAQ check inside _run_pipeline before the RAG retrieval:
+
+⏺ Update(AI-Engine/app/services/conversation.py)
+  ⎿  Added 7 lines, removed 2 lines
+      133      if "pdid" in entities:
+      134          document = await get_document(entities["pdid"])
+      135  
+      136 -    # 5b. RAG retrieval — fetch relevant document context     
+      136 +    # 5b. FAQ lookup — check curated answers before hitting ra
+          +w RAG chunks                                                  
+      137 +    faq_answer = None                                         
+      138 +    if settings.USE_RAG and rag_service.is_ready() and topic !
+          += "docs" and not document:                                    
+      139 +        faq_answer = rag_service.faq_lookup(message)          
+      140 +                                                              
+      141 +    # 5c. RAG retrieval — fetch relevant document context (ski
+          +pped when FAQ matched)                                        
+      142      rag_context = None
+      138 -    if settings.USE_RAG and rag_service.is_ready() and topic !
+          -= "docs":                                                     
+      143 +    if not faq_answer and settings.USE_RAG and rag_service.is_
+          +ready() and topic != "docs":                                  
+      144          if not document and intent in ("lgu_query", "tourism_q
+           uery", "unknown", "document_status", "follow_up", "help", "com
+           plaint"):
+      145              rag_context = rag_service.retrieve_context(
+      146                  query=message,
+
+⏺ Now update the return at the bottom of _run_pipeline and add FAQ short-circuit
+   in process_message:
+
+⏺ Update(AI-Engine/app/services/conversation.py)
+  ⎿  Added 1 line
+      166          context=context,
+      167          document=document,
+      168          rag_context=rag_context,
+      169 +        faq_answer=faq_answer,                                
+      170      )
+      171  
+      172  
+
+⏺ Now add FAQ short-circuit in process_message:
+
+⏺ Update(AI-Engine/app/services/conversation.py)
+  ⎿  Added 12 lines
+      197      """
+      198      p = await _run_pipeline(db, message, session_id, topic)
+      199  
+      200 +    # ── FAQ short-circuit: curated answer available → return 
+          +it directly ──                                                
+      201 +    if p.faq_answer:                                          
+      202 +        log_message(db, p.session.id, "user", message, p.inten
+          +t, p.confidence, p.entities)                                  
+      203 +        log_message(db, p.session.id, "bot", p.faq_answer)    
+      204 +        return {                                              
+      205 +            "reply": p.faq_answer,                            
+      206 +            "session_id": p.session.id,                       
+      207 +            "intent": p.intent,                               
+      208 +            "confidence": round(p.confidence, 4),             
+      209 +            "entities": p.entities,                           
+      210 +        }                                                     
+      211 +                                                              
+      212      # ── Hard guard: PDID provided but not found in DTS → skip
+            LLM entirely ──
+      213      if "pdid" in p.entities and not p.document:
+      214          reply = generate_response(p.intent, p.entities, p.docu
+           ment, p.context, topic=topic, language=language, rag_context=p
+           .rag_context)
+
+⏺ Now add the same short-circuit in stream_message:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(AI-Engine/app/services/conversation.py)
+  ⎿  Added 15 lines
+      271      }
+      272      yield f"data: {json.dumps(metadata)}\n\n"
+      273  
+      274 +    # ── FAQ short-circuit: curated answer → stream it directl
+          +y ──                                                          
+      275 +    if p.faq_answer:                                          
+      276 +        log_message(db, p.session.id, "user", message, p.inten
+          +t, p.confidence, p.entities)                                  
+      277 +        log_message(db, p.session.id, "bot", p.faq_answer)    
+      278 +        yield f"data: {json.dumps({'text': p.faq_answer})}\n\n
+          +"                                                             
+      279 +        done_meta = json.dumps({                              
+      280 +            "session_id": p.session.id,                       
+      281 +            "intent": p.intent,                               
+      282 +            "confidence": round(p.confidence, 4),             
+      283 +            "entities": p.entities,                           
+      284 +            "language": language,                             
+      285 +        })                                                    
+      286 +        yield f"data: [DONE]{done_meta}\n\n"                  
+      287 +        return                                                
+      288 +                                                              
+      289      # ── Hard guard: PDID provided but not found in DTS → skip
+            LLM entirely ──
+      290      if "pdid" in p.entities and not p.document:
+      291          reply = generate_response(p.intent, p.entities, p.docu
+           ment, p.context, topic=topic, language=language, rag_context=p
+           .rag_context)
+
+⏺ Step 4 — Add FAQ schemas:
+
+⏺ Update(AI-Engine/app/schemas/chat.py)
+  ⎿  Added 37 lines
+      123      reply: str = Field(..., description="Welcome message for t
+           he selected topic")
+      124      session_id: str = Field(..., description="Session ID to us
+           e for subsequent chat messages")
+      125      topic: str = Field(..., description="The confirmed selecte
+           d topic")
+      126 +                                                              
+      127 +                                                              
+      128 +class FAQCreateRequest(BaseModel):                            
+      129 +    """Request body for POST /api/faq — save a curated Q&A pai
+          +r."""                                                         
+      130 +    question: str = Field(..., min_length=5, description="The 
+          +canonical question (used for semantic matching)")             
+      131 +    answer: str = Field(..., min_length=5, description="The ex
+          +act answer the bot should return")                            
+      132 +    section: Optional[str] = Field(None, description="Optional
+          + label, e.g. 'Section 3'")                                    
+      133 +                                                              
+      134 +                                                              
+      135 +class FAQUpdateRequest(BaseModel):                            
+      136 +    """Request body for PUT /api/faq/{id} — update a curated Q
+          +&A pair."""                                                   
+      137 +    question: Optional[str] = Field(None, min_length=5)       
+      138 +    answer: Optional[str] = Field(None, min_length=5)         
+      139 +    section: Optional[str] = None                             
+      140 +                                                              
+      141 +                                                              
+      142 +class FAQResponse(BaseModel):                                 
+      143 +    """Single FAQ entry."""                                   
+      144 +    id: int                                                   
+      145 +    question: str                                             
+      146 +    answer: str                                               
+      147 +    section: Optional[str]                                    
+      148 +    created_at: str                                           
+      149 +    updated_at: str                                           
+      150 +                                                              
+      151 +                                                              
+      152 +class FAQListResponse(BaseModel):                             
+      153 +    """Response body for GET /api/faq."""                     
+      154 +    success: bool                                             
+      155 +    total: int                                                
+      156 +    entries: list                                             
+      157 +                                                              
+      158 +                                                              
+      159 +class FAQDeleteResponse(BaseModel):                           
+      160 +    """Response body for DELETE /api/faq/{id}."""             
+      161 +    success: bool                                             
+      162 +    message: str                                              
+
+⏺ Step 5 — Add FAQ routes in routes.py:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Now update the imports and add FAQ endpoints at the end of routes.py:
+
+⏺ Update(AI-Engine/app/api/routes.py)
+  ⎿  Added 2 lines, removed 1 line
+       9  from sqlalchemy.orm import Session as DBSession
+      10  
+      11  from app.db.database import get_db
+      12 -from app.db.models import TrainingData                         
+      12 +from app.db.models import TrainingData, FAQEntry               
+      13  from app.schemas.chat import (
+      14      ChatRequest, ChatResponse,
+      15      TrainRequest, TrainResponse,
+     ...
+      19      RagDeleteRequest, RagDeleteResponse,
+      20      RagRebuildResponse,
+      21      TopicSelectRequest, TopicSelectResponse,
+      22 +    FAQCreateRequest, FAQUpdateRequest, FAQListResponse, FAQDel
+         +eteResponse,                                                   
+      23  )
+      24  from app.services import rag_service
+      25  from app.services.conversation import process_message, stream_m
+          essage, classifier
+
+⏺ Update(AI-Engine/app/api/routes.py)
+  ⎿  Added 106 lines
+      349          )
+      350      except Exception as e:
+      351          raise HTTPException(status_code=500, detail=f"Rebuild 
+           failed: {str(e)}")
+      352 +                                                              
+      353 +                                                              
+      354 +# ── FAQ / Curated Answer Endpoints ──────────────────────────
+          +──────────────────                                            
+      355 +                                                              
+      356 +@router.post("/faq", response_model=dict)                     
+      357 +@limiter.limit("30/minute")                                   
+      358 +async def faq_create(request: Request, payload: FAQCreateReque
+          +st, db: DBSession = Depends(get_db)):                         
+      359 +    """                                                       
+      360 +    Save a curated Q&A pair to the database and immediately lo
+          +ad it into                                                    
+      361 +    the in-memory FAQ cache so the bot can use it without rest
+          +arting.                                                       
+      362 +                                                              
+      363 +    The bot checks FAQ entries before RAG. When a user's quest
+          +ion matches a                                                 
+      364 +    FAQ entry (≥72% semantic similarity), the stored answer is
+          + returned directly.                                           
+      365 +    """                                                       
+      366 +    from datetime import datetime, timezone                   
+      367 +    entry = FAQEntry(                                         
+      368 +        question=payload.question,                            
+      369 +        answer=payload.answer,                                
+      370 +        section=payload.section,                              
+      371 +    )                                                         
+      372 +    db.add(entry)                                             
+      373 +    db.commit()                                               
+      374 +    db.refresh(entry)                                         
+      375 +                                                              
+      376 +    # Hot-load into the in-memory cache so it's available imme
+          +diately                                                       
+      377 +    rag_service.add_faq_to_cache(entry.id, entry.question, ent
+          +ry.answer)                                                    
+      378 +                                                              
+      379 +    return {                                                  
+      380 +        "success": True,                                      
+      381 +        "message": "FAQ entry saved and loaded into bot memory
+          +.",                                                           
+      382 +        "id": entry.id,                                       
+      383 +        "question": entry.question,                           
+      384 +        "answer": entry.answer,                               
+      385 +        "section": entry.section,                             
+      386 +    }                                                         
+      387 +                                                              
+      388 +                                                              
+      389 +@router.get("/faq", response_model=FAQListResponse)           
+      390 +@limiter.limit("30/minute")                                   
+      391 +async def faq_list(request: Request, db: DBSession = Depends(g
+          +et_db)):                                                      
+      392 +    """List all curated FAQ entries."""                       
+      393 +    entries = db.query(FAQEntry).order_by(FAQEntry.created_at.
+          +desc()).all()                                                 
+      394 +    return FAQListResponse(                                   
+      395 +        success=True,                                         
+      396 +        total=len(entries),                                   
+      397 +        entries=[                                             
+      398 +            {                                                 
+      399 +                "id": e.id,                                   
+      400 +                "question": e.question,                       
+      401 +                "answer": e.answer,                           
+      402 +                "section": e.section,                         
+      403 +                "created_at": e.created_at.isoformat(),       
+      404 +                "updated_at": e.updated_at.isoformat(),       
+      405 +            }                                                 
+      406 +            for e in entries                                  
+      407 +        ],                                                    
+      408 +    )                                                         
+      409 +                                                              
+      410 +                                                              
+      411 +@router.put("/faq/{faq_id}", response_model=dict)             
+      412 +@limiter.limit("30/minute")                                   
+      413 +async def faq_update(request: Request, faq_id: int, payload: F
+          +AQUpdateRequest, db: DBSession = Depends(get_db)):            
+      414 +    """                                                       
+      415 +    Update an existing FAQ entry. Refreshes the in-memory cach
+          +e automatically.                                              
+      416 +    """                                                       
+      417 +    entry = db.query(FAQEntry).filter(FAQEntry.id == faq_id).f
+          +irst()                                                        
+      418 +    if not entry:                                             
+      419 +        raise HTTPException(status_code=404, detail=f"FAQ entr
+          +y {faq_id} not found.")                                       
+      420 +                                                              
+      421 +    if payload.question is not None:                          
+      422 +        entry.question = payload.question                     
+      423 +    if payload.answer is not None:                            
+      424 +        entry.answer = payload.answer                         
+      425 +    if payload.section is not None:                           
+      426 +        entry.section = payload.section                       
+      427 +                                                              
+      428 +    db.commit()                                               
+      429 +    db.refresh(entry)                                         
+      430 +                                                              
+      431 +    # Rebuild cache entry: remove old, add updated            
+      432 +    rag_service.remove_faq_from_cache(faq_id)                 
+      433 +    rag_service.add_faq_to_cache(entry.id, entry.question, ent
+          +ry.answer)                                                    
+      434 +                                                              
+      435 +    return {                                                  
+      436 +        "success": True,                                      
+      437 +        "message": "FAQ entry updated.",                      
+      438 +        "id": entry.id,                                       
+      439 +        "question": entry.question,                           
+      440 +        "answer": entry.answer,                               
+      441 +        "section": entry.section,                             
+      442 +    }                                                         
+      443 +                                                              
+      444 +                                                              
+      445 +@router.delete("/faq/{faq_id}", response_model=FAQDeleteRespon
+          +se)                                                           
+      446 +@limiter.limit("30/minute")                                   
+      447 +async def faq_delete(request: Request, faq_id: int, db: DBSess
+          +ion = Depends(get_db)):                                       
+      448 +    """Delete a FAQ entry and remove it from the bot's memory 
+          +immediately."""                                               
+      449 +    entry = db.query(FAQEntry).filter(FAQEntry.id == faq_id).f
+          +irst()                                                        
+      450 +    if not entry:                                             
+      451 +        raise HTTPException(status_code=404, detail=f"FAQ entr
+          +y {faq_id} not found.")                                       
+      452 +                                                              
+      453 +    db.delete(entry)                                          
+      454 +    db.commit()                                               
+      455 +    rag_service.remove_faq_from_cache(faq_id)                 
+      456 +                                                              
+      457 +    return FAQDeleteResponse(success=True, message=f"FAQ entry
+          + {faq_id} deleted.")                                          
+
+⏺ Step 6 — Load FAQs from DB at startup in main.py:
+
+⏺ Update(AI-Engine/app/main.py)
+  ⎿  Added 1 line, removed 1 line
+       8  from app.config import settings
+       9  from app.api.routes import router
+      10  from app.db.database import engine
+      11 -from app.db.models import Base                                 
+      11 +from app.db.models import Base, FAQEntry                       
+      12  from app.services.conversation import classifier
+      13  from app.services import rag_service
+      14  from app.services.llm_client import close_stream_client
+  ⎿  Found 4 new diagnostic issues in 1 file (ctrl+o to expand)
+
+⏺ Update(AI-Engine/app/main.py)
+  ⎿  Added 8 lines
+      51          else:
+      52              print("⚠️  RAG initialization failed — will answer w
+          ithout document context")
+      53  
+      54 +    # Load curated FAQ entries into the in-memory cache        
+      55 +    from app.db.database import SessionLocal                   
+      56 +    with SessionLocal() as db_session:                         
+      57 +        faq_rows = db_session.query(FAQEntry).all()            
+      58 +        if faq_rows:                                           
+      59 +            rag_service.load_faqs([(r.id, r.question, r.answer)
+         + for r in faq_rows])                                           
+      60 +            print(f"✅ FAQ cache loaded ({len(faq_rows)} curate
+         +d entries)")                                                   
+      61 +                                                               
+      62      yield
+      63  
+      64      # --- Shutdown ---
+
+⏺ Now check if SessionLocal is exported from the database module:
+
+  Read 1 file (ctrl+o to expand)  ⎿  Found 2 new diagnostic issues in 1 file (ctrl+o to expand)
+
+⏺ SessionLocal doesn't support context manager (with syntax). Fix that:
+
+⏺ Update(AI-Engine/app/main.py)
+  ⎿  Added 4 lines, removed 1 line
+      53  
+      54      # Load curated FAQ entries into the in-memory cache
+      55      from app.db.database import SessionLocal
+      56 -    with SessionLocal() as db_session:                         
+      56 +    db_session = SessionLocal()                                
+      57 +    try:                                                       
+      58          faq_rows = db_session.query(FAQEntry).all()
+      59          if faq_rows:
+      60              rag_service.load_faqs([(r.id, r.question, r.answer)
+           for r in faq_rows])
+      61              print(f"✅ FAQ cache loaded ({len(faq_rows)} curate
+          d entries)")
+      62 +    finally:                                                   
+      63 +        db_session.close()                                     
+      64  
+      65      yield
+      66  
+
+⏺ Now commit and push:
+
+⏺ Bash(git add AI-Engine/app/db/models.py AI-Engine/app/services/rag_service.py
+      AI-Engine/app/services/conversation.py AI-Engine/app/schemas/chat.py
+      AI-Engine/app/api/…)
+  ⎿  [main 795bdfa] feat: add FAQ/curated answer system for precise bot res
+     ponses
+      6 files changed, 321 insertions(+), 5 deletions(-)
+  ⎿  Found 2 new diagnostic issues in 1 file (ctrl+o to expand)
+
+⏺ Bash(git push)
+  ⎿  To https://github.com/JGPASTOR/Admin_Chatbot.git
+        ed77fee..795bdfa  main -> main
+
+⏺ Done. Here's how to use it:
+
+  ---
+  How to teach the bot (FAQ system)
+
+  Save a curated answer — POST /api/faq
+  {
+    "question": "What is Section 3?",
+    "answer": "Section 3 covers City Development Goals organized by five 
+  sectors: Social Development, Economic Development, Infrastructure Development,
+   Environmental Management, and Institutional Development. Each sector has 
+  specific goals and targets for the city's growth.",
+    "section": "Section 3"
+  }
+
+  List all saved answers — GET /api/faq
+
+  Update an answer — PUT /api/faq/1
+
+  Delete an answer — DELETE /api/faq/1
+
+  ---
+  How it works
+
+  User asks "tell me about section 3"
+           ↓
+    [FAQ lookup] — checks all saved questions by semantic similarity
+           ↓ ≥72% match
+    Returns your exact curated answer ← ALWAYS CORRECT
+           ↓ no match
+    Falls through to RAG → LLM (as before)
+
+  - Changes take effect immediately — no restart needed
+  - Works even when the LLM is offline
+  - You can save answers for any section, any topic
+
+✻ Sautéed for 4m 51s
+
+❯ no faq in admin page                                                          
+
+  Searched for 1 pattern, read 5 files (ctrl+o to expand)
+
+⏺ Now I have everything I need. I'll create:
+  1. adminDB/app/api/faq/route.js — proxy to AI Engine (GET list, POST create)
+  2. adminDB/app/api/faq/[id]/route.js — proxy (PUT update, DELETE delete)
+  3. adminDB/app/faq/page.js — FAQ management page
+  4. Update Sidebar.js to add the FAQ nav item
+
+⏺ Bash(mkdir -p
+      /Users/imziiy/Desktop/2026/Admin_Chatbot/adminDB/app/api/faq/\[id\]
+      /Users/imziiy/Desktop/2026/Admin_Chatbot/adminDB/app/faq)
+  ⎿  Done
+
+⏺ Write(adminDB/app/api/faq/route.js)
+  ⎿  Wrote 33 lines to adminDB/app/api/faq/route.js
+       1 import { NextResponse } from 'next/server';
+       2 
+       3 const AI_ENGINE = process.env.AI_ENGINE_URL || 'http://127.0.0.1
+         :8000';
+       4 
+       5 /* ── GET — list all FAQ entries ── */
+       6 export async function GET() {
+       7     try {
+       8         const res = await fetch(`${AI_ENGINE}/api/faq`, {
+       9             signal: AbortSignal.timeout(8000),
+      10         });
+     … +23 lines (ctrl+o to expand)
+
+⏺ Write(adminDB/app/api/faq/[id]/route.js)
+  ⎿  Wrote 36 lines to adminDB/app/api/faq/[id]/route.js
+       1 import { NextResponse } from 'next/server';
+       2 
+       3 const AI_ENGINE = process.env.AI_ENGINE_URL || 'http://127.0.0.1
+         :8000';
+       4 
+       5 /* ── PUT — update a FAQ entry ── */
+       6 export async function PUT(request, { params }) {
+       7     try {
+       8         const { id } = await params;
+       9         const body = await request.json();
+      10         const res = await fetch(`${AI_ENGINE}/api/faq/${id}`, {
+     … +26 lines (ctrl+o to expand)
+
+⏺ Now the FAQ management page:
+
+⏺ Write(adminDB/app/faq/page.js)
+  ⎿  Wrote 293 lines to adminDB/app/faq/page.js
+       1 'use client';
+       2 import { useState, useEffect } from 'react';
+       3 import Header from '../../components/Header';
+       4 
+       5 function formatDate(dateStr) {
+       6     if (!dateStr) return '—';
+       7     return new Date(dateStr).toLocaleDateString('en-US', {
+       8         year: 'numeric', month: 'short', day: 'numeric',
+       9         hour: '2-digit', minute: '2-digit',
+      10     });
+     … +283 lines (ctrl+o to expand)
+
+⏺ Now add FAQ to the sidebar:
+
+⏺ Update(adminDB/components/Sidebar.js)
+  ⎿  Added 11 lines
+      45              </svg>
+      46          ),
+      47      },
+      48 +    {                                                          
+      49 +        href: '/faq',                                          
+      50 +        label: 'FAQ / BOT TRAINING',                           
+      51 +        icon: (                                                
+      52 +            <svg width="18" height="18" fill="none" stroke="cur
+         +rentColor" strokeWidth="2" viewBox="0 0 24 24">                
+      53 +                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 
+         +1 2-2h14a2 2 0 0 1 2 2z" />                                    
+      54 +                <line x1="9" y1="10" x2="15" y2="10" />        
+      55 +                <line x1="12" y1="7" x2="12" y2="13" />        
+      56 +            </svg>                                             
+      57 +        ),                                                     
+      58 +    },                                                         
+      59  ];
+      60  
+      61  export default function Sidebar() {
+
+⏺ Now commit and push:
+
+⏺ Bash(git add adminDB/app/api/faq/route.js adminDB/app/api/faq/\[id\]/route.js
+      adminDB/app/faq/page.js adminDB/components/Sidebar.js && git commit -m
+      "$(cat <<'EOF'
+      f…)
+  ⎿  ok (+5 files)
+     [lean-ctx: 75→5 tok, -93%]
+
+⏺ Bash(git push)
+  ⎿  To https://github.com/JGPASTOR/Admin_Chatbot.git
+        795bdfa..512d6f0  main -> main
+
+⏺ Done. The admin dashboard now has a FAQ / Bot Training page in the sidebar at
+  /faq.
+
+  How to use it:
+  1. Go to your admin panel → click FAQ / Bot Training in the sidebar
+  2. Fill in:
+    - Section (optional) — e.g. Section 3
+    - Question — e.g. What is Section 3? or Tell me about Section 3
+    - Answer — the full, exact answer you want the bot to give
+  3. Click Save FAQ Entry
+
+  The bot will use it immediately — no restart needed. When a user asks
+  something matching your question (≥72% similarity), it returns your curated
+  answer exactly as written.
+
+✻ Cogitated for 2m 13s
+
+❯ i asked section 2 and it give me the answer on what we input on faq but when  
+i ask section 3 it give me the section 2 result, help us improve this?, how     
+about when other document was upload and assign to us, how to train the ai      
+engine , easy for us and be based on document?                                  
+
+⏺ Two problems to fix:
+
+  1. Section number collision — "section 2" and "section 3" are semantically
+  near-identical so the wrong FAQ wins
+  2. Auto-generate FAQ from uploaded documents — parse sections automatically,
+  admin reviews and saves
+
+  Let me read the current faq_lookup first, then plan both fixes.
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ Good. Now I'll fix both issues.
+
+  Fix 1 — Section number guard in faq_lookup:
+
+⏺ Update(AI-Engine/app/services/rag_service.py)
+  ⎿  Added 24 lines, removed 6 lines
+      549      """
+      550      Check if the query semantically matches any curated FAQ qu
+           estion.
+      551      Returns the stored answer if similarity >= FAQ_THRESHOLD, 
+           else None.
+      552 +                                                              
+      553 +    Section-number guard: if the query mentions "section N", o
+          +nly FAQ entries                                               
+      554 +    whose question also mentions "section N" are eligible — pr
+          +events "section 2"                                            
+      555 +    from matching a "section 3" FAQ entry even when their sema
+          +ntic scores are close.                                        
+      556      """
+      553 -    global _faq_embeddings, _faq_answers, _embedding_model    
+      557 +    global _faq_embeddings, _faq_answers, _faq_questions, _emb
+          +edding_model                                                  
+      558  
+      559      if _embedding_model is None or _faq_embeddings is None or 
+           len(_faq_answers) == 0:
+      560          return None
+     ...
+      565          with _faq_lock:
+      566              emb_snapshot = _faq_embeddings.copy()
+      567              answers_snapshot = list(_faq_answers)
+      568 +            questions_snapshot = list(_faq_questions)         
+      569  
+      570          query_emb = _embedding_model.encode([query], convert_t
+           o_numpy=True)
+      571          sims = cos_sim(query_emb, emb_snapshot)[0]
+      567 -        best_idx = int(np.argmax(sims))                       
+      568 -        best_score = float(sims[best_idx])                    
+      572  
+      570 -        if best_score >= FAQ_THRESHOLD:                       
+      571 -            logger.info(f"[FAQ] Match found (score={best_score
+          -:.3f}) for query: '{query[:60]}'")                            
+      572 -            return answers_snapshot[best_idx]                 
+      573 +        # Section-number guard: extract "section N" from query
+      574 +        section_match = re.search(r'\bsection\s+(\d+)\b', quer
+          +y.lower())                                                    
+      575 +        query_section_num = section_match.group(1) if section_
+          +match else None                                               
+      576  
+      577 +        # Sort candidates by similarity descending and pick be
+          +st eligible one                                               
+      578 +        ranked = sorted(enumerate(sims), key=lambda x: x[1], r
+          +everse=True)                                                  
+      579 +        for idx, score in ranked:                             
+      580 +            if score < FAQ_THRESHOLD:                         
+      581 +                break  # remaining scores are all lower       
+      582 +                                                              
+      583 +            if query_section_num is not None:                 
+      584 +                # Only accept this FAQ entry if its question h
+          +as the SAME section number                                    
+      585 +                faq_section = re.search(r'\bsection\s+(\d+)\b'
+          +, questions_snapshot[idx].lower())                            
+      586 +                if not faq_section or faq_section.group(1) != 
+          +query_section_num:                                            
+      587 +                    continue  # wrong section number — skip   
+      588 +                                                              
+      589 +            logger.info(f"[FAQ] Match found (score={score:.3f}
+          +) for query: '{query[:60]}'")                                 
+      590 +            return answers_snapshot[idx]                      
+      591 +                                                              
+      592          return None
+      593      except Exception as e:
+      594          logger.error(f"[FAQ] Lookup failed: {e}")
+
+⏺ Fix 2 — Auto-generate FAQ from document. Add an endpoint in the AI Engine that
+   takes a document's extracted text, splits it by section, and returns proposed
+   Q&A pairs ready to save:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(AI-Engine/app/schemas/chat.py)
+  ⎿  Added 6 lines
+      125      topic: str = Field(..., description="The confirmed selecte
+           d topic")
+      126  
+      127  
+      128 +class FAQSuggestRequest(BaseModel):                           
+      129 +    """Request body for POST /api/faq/suggest — generate FAQ p
+          +roposals from document text."""                               
+      130 +    text: str = Field(..., min_length=10, description="Extract
+          +ed plain text from the document")                             
+      131 +    filename: Optional[str] = Field(None, description="Documen
+          +t filename for labeling")                                     
+      132 +                                                              
+      133 +                                                              
+      134  class FAQCreateRequest(BaseModel):
+      135      """Request body for POST /api/faq — save a curated Q&A pai
+           r."""
+      136      question: str = Field(..., min_length=5, description="The 
+           canonical question (used for semantic matching)")
+
+⏺ Now add the /api/faq/suggest endpoint in routes.py. This endpoint splits the
+  document text by section headers and returns proposed Q&A pairs — no LLM
+  needed, pure text parsing:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(AI-Engine/app/api/routes.py)
+  ⎿  Added 1 line
+      20      RagRebuildResponse,
+      21      TopicSelectRequest, TopicSelectResponse,
+      22      FAQCreateRequest, FAQUpdateRequest, FAQListResponse, FAQDel
+          eteResponse,
+      23 +    FAQSuggestRequest,                                         
+      24  )
+      25  from app.services import rag_service
+      26  from app.services.conversation import process_message, stream_m
+          essage, classifier
+
+⏺ Now add the suggest endpoint — place it before the POST /api/faq route so
+  FastAPI doesn't confuse /faq/suggest with /faq/{id}:
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+  ⎿  Found 13 new diagnostic issues in 1 file (ctrl+o to expand)
+
+⏺ Update(AI-Engine/app/api/routes.py)
+  ⎿  Added 64 lines
+      354  
+      355  # ── FAQ / Curated Answer Endpoints ──────────────────────────
+           ──────────────────
+      356  
+      357 +@router.post("/faq/suggest", response_model=dict)             
+      358 +@limiter.limit("20/minute")                                   
+      359 +async def faq_suggest(request: Request, payload: FAQSuggestReq
+          +uest):                                                        
+      360 +    """                                                       
+      361 +    Parse a document's extracted text into proposed FAQ entrie
+          +s.                                                            
+      362 +                                                              
+      363 +    Splits on SECTION headers and returns a list of {section, 
+          +question, answer}                                             
+      364 +    objects ready for the admin to review and save. No LLM req
+          +uired — pure                                                  
+      365 +    text extraction so it works even when the LLM is offline. 
+      366 +    """                                                       
+      367 +    text = payload.text.strip()                               
+      368 +    filename = payload.filename or "document"                 
+      369 +                                                              
+      370 +    # Split on SECTION headers (e.g. "SECTION 1 — LGU VISION",
+          + "Section 2.")                                                
+      371 +    section_pattern = re.compile(r'(?=\bSECTION\s+\d+\b)', re.
+          +IGNORECASE)                                                   
+      372 +    raw_sections = section_pattern.split(text)                
+      373 +                                                              
+      374 +    proposals = []                                            
+      375 +    for raw in raw_sections:                                  
+      376 +        raw = raw.strip()                                     
+      377 +        if not raw:                                           
+      378 +            continue                                          
+      379 +                                                              
+      380 +        lines = raw.splitlines()                              
+      381 +        # First non-empty line is the section header          
+      382 +        header = next((l.strip() for l in lines if l.strip()),
+          + "")                                                          
+      383 +        if not header:                                        
+      384 +            continue                                          
+      385 +                                                              
+      386 +        # Body = everything after the header, trimmed         
+      387 +        body_lines = lines[1:]                                
+      388 +        body = "\n".join(l for l in body_lines if l.strip()).s
+          +trip()                                                        
+      389 +                                                              
+      390 +        if not body:                                          
+      391 +            # Header-only section (no content) — still propose
+          + it so admin can fill in the answer                           
+      392 +            body = header                                     
+      393 +                                                              
+      394 +        # Extract section number for the label                
+      395 +        num_match = re.search(r'section\s+(\d+)', header, re.I
+          +GNORECASE)                                                    
+      396 +        section_label = f"Section {num_match.group(1)}" if num
+          +_match else header[:40]                                       
+      397 +                                                              
+      398 +        # Generate a natural question from the header         
+      399 +        # Remove "SECTION N —" prefix, keep the topic part    
+      400 +        topic = re.sub(r'^\s*SECTION\s+\d+\s*[—\-:\.]*\s*', ''
+          +, header, flags=re.IGNORECASE).strip()                        
+      401 +        if topic:                                             
+      402 +            question = f"What is {topic}?" if not topic.lower(
+          +).startswith("what") else topic                               
+      403 +        else:                                                 
+      404 +            question = f"What is {section_label}?"            
+      405 +                                                              
+      406 +        proposals.append({                                    
+      407 +            "section": section_label,                         
+      408 +            "question": question,                             
+      409 +            "answer": body[:2000],  # cap at 2000 chars to kee
+          +p answers focused                                             
+      410 +            "header": header,                                 
+      411 +        })                                                    
+      412 +                                                              
+      413 +    return {                                                  
+      414 +        "success": True,                                      
+      415 +        "filename": filename,                                 
+      416 +        "total": len(proposals),                              
+      417 +        "proposals": proposals,                               
+      418 +    }                                                         
+      419 +                                                              
+      420 +                                                              
+      421  @router.post("/faq", response_model=dict)
+      422  @limiter.limit("30/minute")
+      423  async def faq_create(request: Request, payload: FAQCreateReque
+           st, db: DBSession = Depends(get_db)):
+
+⏺ Now add the admin-side proxy route and update the FAQ page with document-based
+   generation. First, add the proxy API route in the admin:
+
+⏺ Write(adminDB/app/api/faq/suggest/route.js)
+  ⎿  Wrote 20 lines to adminDB/app/api/faq/suggest/route.js
+       1 import { NextResponse } from 'next/server';
+       2 
+       3 const AI_ENGINE = process.env.AI_ENGINE_URL || 'http://127.0.0.1
+         :8000';
+       4 
+       5 /* ── POST — generate FAQ proposals from document text ── */
+       6 export async function POST(request) {
+       7     try {
+       8         const body = await request.json();
+       9         const res = await fetch(`${AI_ENGINE}/api/faq/suggest`, 
+         {
+      10             method: 'POST',
+     … +10 lines (ctrl+o to expand)
+  ⎿  Found 5 new diagnostic issues in 1 file (ctrl+o to expand)
+
+⏺ Now update the FAQ admin page to include the "Generate from Document" feature:
+
+⏺ Write(adminDB/app/faq/page.js)
+  ⎿  Added 242 lines, removed 100 lines
+      10      });
+      11  }
+      12  
+      13 +const inputStyle = {                                           
+      14 +    width: '100%', padding: '10px 12px', borderRadius: 8,      
+      15 +    border: '1px solid var(--border)', fontSize: 13,           
+      16 +    outline: 'none', fontFamily: 'inherit', color: 'var(--text)
+         +',                                                             
+      17 +    background: 'var(--surface-2)',                            
+      18 +};                                                             
+      19 +                                                               
+      20 +const card = {                                                 
+      21 +    background: 'var(--surface)', borderRadius: 'var(--radius)'
+         +,                                                              
+      22 +    boxShadow: 'var(--shadow)', padding: 24, marginBottom: 16, 
+      23 +};                                                             
+      24 +                                                               
+      25 +const btnPrimary = (disabled) => ({                            
+      26 +    padding: '10px 20px', borderRadius: 8, border: 'none', curs
+         +or: disabled ? 'not-allowed' : 'pointer',                      
+      27 +    background: 'var(--primary)', color: '#fff', fontWeight: 60
+         +0, fontSize: 13,                                               
+      28 +    opacity: disabled ? 0.6 : 1,                               
+      29 +});                                                            
+      30 +                                                               
+      31 +const btnGreen = (disabled) => ({                              
+      32 +    padding: '8px 16px', borderRadius: 8, border: 'none', curso
+         +r: disabled ? 'not-allowed' : 'pointer',                       
+      33 +    background: '#16a34a', color: '#fff', fontWeight: 600, font
+         +Size: 13,                                                      
+      34 +    opacity: disabled ? 0.6 : 1,                               
+      35 +});                                                            
+      36 +                                                               
+      37 +const btnSecondary = {                                         
+      38 +    padding: '6px 14px', borderRadius: 6, border: 'none', curso
+         +r: 'pointer',                                                  
+      39 +    background: '#f1f5f9', color: 'var(--text-2)', fontWeight: 
+         +500, fontSize: 12,                                             
+      40 +};                                                             
+      41 +                                                               
+      42 +const btnDanger = {                                            
+      43 +    padding: '6px 14px', borderRadius: 6, border: 'none', curso
+         +r: 'pointer',                                                  
+      44 +    background: '#fee2e2', color: '#dc2626', fontWeight: 500, f
+         +ontSize: 12,                                                   
+      45 +};                                                             
+      46 +                                                               
+      47 +const btnSave = {                                              
+      48 +    padding: '6px 14px', borderRadius: 6, border: 'none', curso
+         +r: 'pointer',                                                  
+      49 +    background: 'var(--primary)', color: '#fff', fontWeight: 50
+         +0, fontSize: 12,                                               
+      50 +};                                                             
+      51 +                                                               
+      52  export default function FAQPage() {
+      53      const [entries, setEntries] = useState([]);
+      54      const [loading, setLoading] = useState(true);
+     ...
+      56      const [error, setError] = useState('');
+      57      const [success, setSuccess] = useState('');
+      58  
+      20 -    // Form state                                              
+      59 +    // Manual form                                             
+      60      const [question, setQuestion] = useState('');
+      61      const [answer, setAnswer] = useState('');
+      62      const [section, setSection] = useState('');
+     ...
+      67      const [editAnswer, setEditAnswer] = useState('');
+      68      const [editSection, setEditSection] = useState('');
+      69  
+      31 -    const load = () => {                                       
+      70 +    // Generate-from-document state                            
+      71 +    const [docs, setDocs] = useState([]);                      
+      72 +    const [selectedDocId, setSelectedDocId] = useState('');    
+      73 +    const [generating, setGenerating] = useState(false);       
+      74 +    const [proposals, setProposals] = useState([]);            
+      75 +    const [selectedProposals, setSelectedProposals] = useState(
+         +new Set());                                                    
+      76 +    const [savingProposals, setSavingProposals] = useState(fals
+         +e);                                                            
+      77 +                                                               
+      78 +    const loadEntries = () => {                                
+      79          setLoading(true);
+      80          fetch('/api/faq')
+      81              .then(r => r.json())
+     ...
+       83              .catch(() => setLoading(false));
+       84      };
+       85  
+       39 -    useEffect(() => { load(); }, []);                         
+       86 +    const loadDocs = () => {                                  
+       87 +        fetch('/api/general-documents')                       
+       88 +            .then(r => r.json())                              
+       89 +            .then(res => setDocs(res.data || []))             
+       90 +            .catch(() => {});                                 
+       91 +    };                                                        
+       92  
+       93 +    useEffect(() => { loadEntries(); loadDocs(); }, []);      
+       94 +                                                              
+       95      const flash = (msg, isError = false) => {
+       42 -        if (isError) { setError(msg); setTimeout(() => setErro
+          -r(''), 4000); }                                               
+       96 +        if (isError) { setError(msg); setTimeout(() => setErro
+          +r(''), 5000); }                                               
+       97          else { setSuccess(msg); setTimeout(() => setSuccess(''
+           ), 3000); }
+       98      };
+       99  
+      100 +    // ── Manual create ──                                    
+      101      const handleCreate = async (e) => {
+      102          e.preventDefault();
+      103          if (!question.trim() || !answer.trim()) return flash('
+           Question and Answer are required.', true);
+     ...
+      112              if (!res.ok) throw new Error(data.detail || data.e
+           rror || 'Failed to save.');
+      113              flash('FAQ entry saved! The bot will now use this 
+           answer.');
+      114              setQuestion(''); setAnswer(''); setSection('');
+       60 -            load();                                           
+      115 +            loadEntries();                                    
+      116          } catch (err) { flash(err.message, true); }
+      117          finally { setSaving(false); }
+      118      };
+      119  
+      120 +    // ── Edit ──                                             
+      121      const startEdit = (entry) => {
+      122          setEditId(entry.id);
+      123          setEditQuestion(entry.question);
+     ...
+      125          setEditSection(entry.section || '');
+      126      };
+      127  
+       72 -    const cancelEdit = () => { setEditId(null); };            
+       73 -                                                              
+      128      const handleUpdate = async (id) => {
+      129          if (!editQuestion.trim() || !editAnswer.trim()) return
+            flash('Question and Answer are required.', true);
+      130          setSaving(true);
+     ...
+      138              if (!res.ok) throw new Error(data.detail || data.e
+           rror || 'Failed to update.');
+      139              flash('FAQ entry updated.');
+      140              setEditId(null);
+       87 -            load();                                           
+      141 +            loadEntries();                                    
+      142          } catch (err) { flash(err.message, true); }
+      143          finally { setSaving(false); }
+      144      };
+     ...
+      150              const data = await res.json();
+      151              if (!res.ok) throw new Error(data.detail || data.e
+           rror || 'Failed to delete.');
+      152              flash('FAQ entry deleted.');
+       99 -            load();                                           
+      153 +            loadEntries();                                    
+      154          } catch (err) { flash(err.message, true); }
+      155      };
+      156  
+      103 -    const card = {                                            
+      104 -        background: 'var(--surface)', borderRadius: 'var(--rad
+          -ius)',                                                        
+      105 -        boxShadow: 'var(--shadow)', padding: 24, marginBottom:
+          - 16,                                                          
+      106 -    };                                                        
+      157 +    // ── Generate from document ──                           
+      158 +    const handleGenerate = async () => {                      
+      159 +        if (!selectedDocId) return flash('Please select a docu
+          +ment first.', true);                                          
+      160 +        setGenerating(true);                                  
+      161 +        setProposals([]);                                     
+      162 +        setSelectedProposals(new Set());                      
+      163 +        try {                                                 
+      164 +            // Fetch full doc to get extracted text           
+      165 +            const docRes = await fetch(`/api/general-documents
+          +/${selectedDocId}`);                                          
+      166 +            const docData = await docRes.json();              
+      167 +            if (!docData.success) throw new Error('Could not f
+          +etch document.');                                             
+      168  
+      108 -    const inputStyle = {                                      
+      109 -        width: '100%', padding: '10px 12px', borderRadius: 8, 
+      110 -        border: '1px solid var(--border)', fontSize: 13,      
+      111 -        outline: 'none', fontFamily: 'inherit', color: 'var(--
+          -text)',                                                       
+      112 -        background: 'var(--surface-2)',                       
+      113 -    };                                                        
+      169 +            const extracted = docData.data.extracted_data;    
+      170 +            const text = (typeof extracted === 'object' ? extr
+          +acted.text : '') || '';                                       
+      171 +            if (!text.trim()) throw new Error('This document h
+          +as no extracted text to parse.');                             
+      172  
+      115 -    const btnPrimary = {                                      
+      116 -        padding: '10px 20px', borderRadius: 8, border: 'none',
+          - cursor: 'pointer',                                           
+      117 -        background: 'var(--primary)', color: '#fff', fontWeigh
+          -t: 600, fontSize: 13,                                         
+      118 -        opacity: saving ? 0.7 : 1,                            
+      173 +            const sugRes = await fetch('/api/faq/suggest', {  
+      174 +                method: 'POST',                               
+      175 +                headers: { 'Content-Type': 'application/json' 
+          +},                                                            
+      176 +                body: JSON.stringify({ text, filename: docData
+          +.data.original_name }),                                       
+      177 +            });                                               
+      178 +            const sugData = await sugRes.json();              
+      179 +            if (!sugData.success) throw new Error(sugData.erro
+          +r || 'Failed to generate suggestions.');                      
+      180 +                                                              
+      181 +            if (sugData.proposals.length === 0) {             
+      182 +                flash('No sections found in this document. Mak
+          +e sure it has SECTION headers.', true);                       
+      183 +            } else {                                          
+      184 +                setProposals(sugData.proposals);              
+      185 +                // Select all by default                      
+      186 +                setSelectedProposals(new Set(sugData.proposals
+          +.map((_, i) => i)));                                          
+      187 +            }                                                 
+      188 +        } catch (err) { flash(err.message, true); }           
+      189 +        finally { setGenerating(false); }                     
+      190      };
+      191  
+      121 -    const btnDanger = {                                       
+      122 -        padding: '6px 14px', borderRadius: 6, border: 'none', 
+          -cursor: 'pointer',                                            
+      123 -        background: '#fee2e2', color: '#dc2626', fontWeight: 5
+          -00, fontSize: 12,                                             
+      192 +    const toggleProposal = (idx) => {                         
+      193 +        setSelectedProposals(prev => {                        
+      194 +            const next = new Set(prev);                       
+      195 +            if (next.has(idx)) next.delete(idx); else next.add
+          +(idx);                                                        
+      196 +            return next;                                      
+      197 +        });                                                   
+      198      };
+      199  
+      126 -    const btnSecondary = {                                    
+      127 -        padding: '6px 14px', borderRadius: 6, border: 'none', 
+          -cursor: 'pointer',                                            
+      128 -        background: '#f1f5f9', color: 'var(--text-2)', fontWei
+          -ght: 500, fontSize: 12,                                       
+      200 +    const toggleAllProposals = () => {                        
+      201 +        if (selectedProposals.size === proposals.length) setSe
+          +lectedProposals(new Set());                                   
+      202 +        else setSelectedProposals(new Set(proposals.map((_, i)
+          + => i)));                                                     
+      203      };
+      204  
+      131 -    const btnSave = {                                         
+      132 -        padding: '6px 14px', borderRadius: 6, border: 'none', 
+          -cursor: 'pointer',                                            
+      133 -        background: 'var(--primary)', color: '#fff', fontWeigh
+          -t: 500, fontSize: 12,                                         
+      205 +    const handleSaveProposals = async () => {                 
+      206 +        const toSave = proposals.filter((_, i) => selectedProp
+          +osals.has(i));                                                
+      207 +        if (toSave.length === 0) return flash('Select at least
+          + one entry to save.', true);                                  
+      208 +        setSavingProposals(true);                             
+      209 +        let saved = 0;                                        
+      210 +        for (const p of toSave) {                             
+      211 +            try {                                             
+      212 +                const res = await fetch('/api/faq', {         
+      213 +                    method: 'POST',                           
+      214 +                    headers: { 'Content-Type': 'application/js
+          +on' },                                                        
+      215 +                    body: JSON.stringify({ question: p.questio
+          +n, answer: p.answer, section: p.section }),                   
+      216 +                });                                           
+      217 +                if (res.ok) saved++;                          
+      218 +            } catch { /* skip */ }                            
+      219 +        }                                                     
+      220 +        flash(`Saved ${saved} FAQ entries. The bot can now ans
+          +wer these questions.`);                                       
+      221 +        setProposals([]);                                     
+      222 +        setSelectedProposals(new Set());                      
+      223 +        loadEntries();                                        
+      224 +        setSavingProposals(false);                            
+      225      };
+      226  
+      227      return (
+      228          <div style={{ marginLeft: 'var(--sidebar-w)', minHeigh
+           t: '100vh', background: 'var(--bg)' }}>
+      138 -            <Header title="FAQ / Curated Answers" />          
+      139 -            <main style={{ padding: '24px 32px', maxWidth: 900
+          - }}>                                                          
+      229 +            <Header title="FAQ / Bot Training" />             
+      230 +            <main style={{ padding: '24px 32px', maxWidth: 960
+          + }}>                                                          
+      231  
+      141 -                {/* Description */}                           
+      142 -                <div style={{ ...card, background: '#f0fdf4', 
+          -border: '1px solid #bbf7d0', marginBottom: 24 }}>             
+      232 +                {/* Info banner */}                           
+      233 +                <div style={{ ...card, background: '#f0fdf4', 
+          +border: '1px solid #bbf7d0', marginBottom: 24, padding: '16px 
+          +20px' }}>                                                     
+      234                      <div style={{ display: 'flex', gap: 12, al
+           ignItems: 'flex-start' }}>
+      144 -                        <span style={{ fontSize: 22 }}>💡</spa
+          -n>                                                            
+      145 -                        <div>                                 
+      146 -                            <div style={{ fontWeight: 600, col
+          -or: 'var(--primary)', marginBottom: 4 }}>How this works</div> 
+      147 -                            <div style={{ color: 'var(--text-2
+          -)', fontSize: 13, lineHeight: 1.6 }}>                         
+      148 -                                Save exact Q&amp;A pairs here 
+          -to teach the bot precise answers. When a user asks something  
+      149 -                                that matches a saved question 
+          -(≥72% similarity), the bot returns your curated answer directl
+          -y —                                                           
+      150 -                                no guessing, no hallucination.
+          - Takes effect immediately without restarting.                 
+      151 -                            </div>                            
+      235 +                        <span style={{ fontSize: 20 }}>💡</spa
+          +n>                                                            
+      236 +                        <div style={{ color: 'var(--text-2)', 
+          +fontSize: 13, lineHeight: 1.6 }}>                             
+      237 +                            <strong style={{ color: 'var(--pri
+          +mary)' }}>How this works: </strong>                           
+      238 +                            Save exact Q&A pairs to teach the 
+          +bot precise answers. When a user's question matches a saved en
+          +try                                                           
+      239 +                            (≥72% similarity + exact section n
+          +umber), the bot returns your answer directly.                 
+      240 +                            Use <strong>Generate from Document
+          +</strong> to auto-extract all sections at once.               
+      241                          </div>
+      242                      </div>
+      243                  </div>
+      244  
+      245                  {/* Alerts */}
+      157 -                {error && (                                   
+      158 -                    <div style={{ background: '#fee2e2', borde
+          -r: '1px solid #fca5a5', borderRadius: 8, padding: '12px 16px',
+          - marginBottom: 16, color: '#dc2626', fontSize: 13 }}>         
+      159 -                        {error}                               
+      246 +                {error && <div style={{ background: '#fee2e2',
+          + border: '1px solid #fca5a5', borderRadius: 8, padding: '12px 
+          +16px', marginBottom: 16, color: '#dc2626', fontSize: 13 }}>{er
+          +ror}</div>}                                                   
+      247 +                {success && <div style={{ background: '#f0fdf4
+          +', border: '1px solid #86efac', borderRadius: 8, padding: '12p
+          +x 16px', marginBottom: 16, color: '#16a34a', fontSize: 13 }}>{
+          +success}</div>}                                               
+      248 +                                                              
+      249 +                {/* ── Generate from Document ── */}          
+      250 +                <div style={{ ...card, border: '1.5px solid #b
+          +fdbfe' }}>                                                    
+      251 +                    <div style={{ fontWeight: 700, fontSize: 1
+          +5, marginBottom: 4, color: 'var(--text)' }}>                  
+      252 +                        Generate from Document                
+      253                      </div>
+      161 -                )}                                            
+      162 -                {success && (                                 
+      163 -                    <div style={{ background: '#f0fdf4', borde
+          -r: '1px solid #86efac', borderRadius: 8, padding: '12px 16px',
+          - marginBottom: 16, color: '#16a34a', fontSize: 13 }}>         
+      164 -                        {success}                             
+      254 +                    <div style={{ color: 'var(--text-2)', font
+          +Size: 12, marginBottom: 14 }}>                                
+      255 +                        Pick an uploaded document — the system
+          + will extract every section and suggest FAQ entries for you to
+          + review and save.                                             
+      256                      </div>
+      166 -                )}                                            
+      257 +                    <div style={{ display: 'flex', gap: 10, al
+          +ignItems: 'center', flexWrap: 'wrap' }}>                      
+      258 +                        <select                               
+      259 +                            style={{ ...inputStyle, width: 320
+          + }}                                                           
+      260 +                            value={selectedDocId}             
+      261 +                            onChange={e => { setSelectedDocId(
+          +e.target.value); setProposals([]); setSelectedProposals(new Se
+          +t()); }}                                                      
+      262 +                        >                                     
+      263 +                            <option value="">— Select a docume
+          +nt —</option>                                                 
+      264 +                            {docs.map(d => (                  
+      265 +                                <option key={d.id} value={d.id
+          +}>{d.original_name}</option>                                  
+      266 +                            ))}                               
+      267 +                        </select>                             
+      268 +                        <button style={btnGreen(generating || 
+          +!selectedDocId)} onClick={handleGenerate} disabled={generating
+          + || !selectedDocId}>                                          
+      269 +                            {generating ? 'Extracting sections
+          +...' : 'Extract Sections'}                                    
+      270 +                        </button>                             
+      271 +                    </div>                                    
+      272  
+      168 -                {/* Create form */}                           
+      273 +                    {/* Proposals list */}                    
+      274 +                    {proposals.length > 0 && (                
+      275 +                        <div style={{ marginTop: 20 }}>       
+      276 +                            <div style={{ display: 'flex', jus
+          +tifyContent: 'space-between', alignItems: 'center', marginBott
+          +om: 12 }}>                                                    
+      277 +                                <div style={{ fontWeight: 600,
+          + fontSize: 13 }}>                                             
+      278 +                                    {proposals.length} section
+          +s found — review and save:                                    
+      279 +                                </div>                        
+      280 +                                <div style={{ display: 'flex',
+          + gap: 8, alignItems: 'center' }}>                             
+      281 +                                    <button style={btnSecondar
+          +y} onClick={toggleAllProposals}>                              
+      282 +                                        {selectedProposals.siz
+          +e === proposals.length ? 'Deselect All' : 'Select All'}       
+      283 +                                    </button>                 
+      284 +                                    <button                   
+      285 +                                        style={btnGreen(saving
+          +Proposals || selectedProposals.size === 0)}                   
+      286 +                                        onClick={handleSavePro
+          +posals}                                                       
+      287 +                                        disabled={savingPropos
+          +als || selectedProposals.size === 0}                          
+      288 +                                    >                         
+      289 +                                        {savingProposals ? 'Sa
+          +ving...' : `Save Selected (${selectedProposals.size})`}       
+      290 +                                    </button>                 
+      291 +                                </div>                        
+      292 +                            </div>                            
+      293 +                                                              
+      294 +                            {proposals.map((p, idx) => (      
+      295 +                                <div key={idx} style={{       
+      296 +                                    border: `1.5px solid ${sel
+          +ectedProposals.has(idx) ? 'var(--primary-accent)' : 'var(--bor
+          +der)'}`,                                                      
+      297 +                                    borderRadius: 8, padding: 
+          +14, marginBottom: 10,                                         
+      298 +                                    background: selectedPropos
+          +als.has(idx) ? '#f0fdf4' : 'var(--surface-2)',                
+      299 +                                    cursor: 'pointer',        
+      300 +                                }} onClick={() => togglePropos
+          +al(idx)}>                                                     
+      301 +                                    <div style={{ display: 'fl
+          +ex', gap: 10, alignItems: 'flex-start' }}>                    
+      302 +                                        <input                
+      303 +                                            type="checkbox"   
+      304 +                                            checked={selectedP
+          +roposals.has(idx)}                                            
+      305 +                                            onChange={() => to
+          +ggleProposal(idx)}                                            
+      306 +                                            onClick={e => e.st
+          +opPropagation()}                                              
+      307 +                                            style={{ marginTop
+          +: 3, flexShrink: 0, accentColor: 'var(--primary)' }}          
+      308 +                                        />                    
+      309 +                                        <div style={{ flex: 1 
+          +}}>                                                           
+      310 +                                            <div style={{ disp
+          +lay: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+      311 +                                                <span style={{
+      312 +                                                    background
+          +: '#dcfce7', color: 'var(--primary)', borderRadius: 5,        
+      313 +                                                    padding: '
+          +1px 8px', fontSize: 11, fontWeight: 600, textTransform: 'upper
+          +case',                                                        
+      314 +                                                }}>{p.section}
+          +</span>                                                       
+      315 +                                            </div>            
+      316 +                                            <div style={{ font
+          +Weight: 600, fontSize: 13, color: 'var(--text)', marginBottom:
+          + 4 }}>                                                        
+      317 +                                                Q: {p.question
+          +}                                                             
+      318 +                                            </div>            
+      319 +                                            <div style={{     
+      320 +                                                fontSize: 12, 
+          +color: 'var(--text-2)', lineHeight: 1.55,                     
+      321 +                                                maxHeight: 80,
+          + overflow: 'hidden', position: 'relative',                    
+      322 +                                            }}>               
+      323 +                                                {p.answer.slic
+          +e(0, 300)}{p.answer.length > 300 ? '...' : ''}                
+      324 +                                            </div>            
+      325 +                                        </div>                
+      326 +                                    </div>                    
+      327 +                                </div>                        
+      328 +                            ))}                               
+      329 +                        </div>                                
+      330 +                    )}                                        
+      331 +                </div>                                        
+      332 +                                                              
+      333 +                {/* ── Manual create ── */}                   
+      334                  <div style={card}>
+      170 -                    <div style={{ fontWeight: 600, fontSize: 1
+          -5, marginBottom: 16, color: 'var(--text)' }}>                 
+      171 -                        Add New FAQ Entry                     
+      335 +                    <div style={{ fontWeight: 700, fontSize: 1
+          +5, marginBottom: 4, color: 'var(--text)' }}>Add Entry Manually
+          +</div>                                                        
+      336 +                    <div style={{ color: 'var(--text-2)', font
+          +Size: 12, marginBottom: 14 }}>                                
+      337 +                        Write your own question and answer for
+          + anything not covered by a document.                          
+      338                      </div>
+      339                      <form onSubmit={handleCreate}>
+      174 -                        <div style={{ marginBottom: 12 }}>    
+      175 -                            <label style={{ display: 'block', 
+          -fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginB
+          -ottom: 6, textTransform: 'uppercase', letterSpacing: '0.5px' }
+          -}>                                                            
+      176 -                                Section / Label <span style={{
+          - color: 'var(--text-3)', fontWeight: 400 }}>(optional)</span> 
+      177 -                            </label>                          
+      178 -                            <input                            
+      179 -                                style={{ ...inputStyle, width:
+          - 260 }}                                                       
+      180 -                                placeholder="e.g. Section 3, L
+          -GU Vision, Tourism"                                           
+      181 -                                value={section}               
+      182 -                                onChange={e => setSection(e.ta
+          -rget.value)}                                                  
+      183 -                            />                                
+      340 +                        <div style={{ display: 'flex', gap: 12
+          +, marginBottom: 12, flexWrap: 'wrap' }}>                      
+      341 +                            <div style={{ flex: '0 0 260px' }}
+          +>                                                             
+      342 +                                <label style={{ display: 'bloc
+          +k', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', mar
+          +ginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.5p
+          +x' }}>                                                        
+      343 +                                    Section / Label <span styl
+          +e={{ color: 'var(--text-3)', fontWeight: 400 }}>(optional)</sp
+          +an>                                                           
+      344 +                                </label>                      
+      345 +                                <input style={inputStyle} plac
+          +eholder="e.g. Section 3" value={section} onChange={e => setSec
+          +tion(e.target.value)} />                                      
+      346 +                            </div>                            
+      347                          </div>
+      348                          <div style={{ marginBottom: 12 }}>
+      186 -                            <label style={{ display: 'block', 
+          -fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginB
+          -ottom: 6, textTransform: 'uppercase', letterSpacing: '0.5px' }
+          -}>                                                            
+      349 +                            <label style={{ display: 'block', 
+          +fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginB
+          +ottom: 5, textTransform: 'uppercase', letterSpacing: '0.5px' }
+          +}>                                                            
+      350                                  Question <span style={{ color:
+            '#dc2626' }}>*</span>
+      351                              </label>
+      189 -                            <input                            
+      190 -                                style={inputStyle}            
+      191 -                                placeholder="e.g. What is Sect
+          -ion 3? / Tell me about Section 3"                             
+      192 -                                value={question}              
+      193 -                                onChange={e => setQuestion(e.t
+          -arget.value)}                                                 
+      194 -                            />                                
+      195 -                            <div style={{ fontSize: 11, color:
+          - 'var(--text-3)', marginTop: 4 }}>                            
+      196 -                                The bot matches user questions
+          - to this using semantic similarity. Write it the way users wou
+          -ld ask.                                                       
+      197 -                            </div>                            
+      352 +                            <input style={inputStyle} placehol
+          +der="e.g. What is Section 3? / Tell me about Section 3" value=
+          +{question} onChange={e => setQuestion(e.target.value)} />     
+      353 +                            <div style={{ fontSize: 11, color:
+          + 'var(--text-3)', marginTop: 3 }}>Write it the way users would
+          + ask.</div>                                                   
+      354                          </div>
+      355                          <div style={{ marginBottom: 16 }}>
+      200 -                            <label style={{ display: 'block', 
+          -fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginB
+          -ottom: 6, textTransform: 'uppercase', letterSpacing: '0.5px' }
+          -}>                                                            
+      356 +                            <label style={{ display: 'block', 
+          +fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginB
+          +ottom: 5, textTransform: 'uppercase', letterSpacing: '0.5px' }
+          +}>                                                            
+      357                                  Answer <span style={{ color: '
+           #dc2626' }}>*</span>
+      358                              </label>
+      203 -                            <textarea                         
+      204 -                                style={{ ...inputStyle, minHei
+          -ght: 120, resize: 'vertical', lineHeight: 1.6 }}              
+      359 +                            <textarea style={{ ...inputStyle, 
+          +minHeight: 120, resize: 'vertical', lineHeight: 1.6 }}        
+      360                                  placeholder="Write the exact, 
+           complete answer the bot should give..."
+      206 -                                value={answer}                
+      207 -                                onChange={e => setAnswer(e.tar
+          -get.value)}                                                   
+      208 -                            />                                
+      361 +                                value={answer} onChange={e => 
+          +setAnswer(e.target.value)} />                                 
+      362                          </div>
+      210 -                        <button type="submit" style={btnPrimar
+          -y} disabled={saving}>                                         
+      363 +                        <button type="submit" style={btnPrimar
+          +y(saving)} disabled={saving}>                                 
+      364                              {saving ? 'Saving...' : '+ Save FA
+           Q Entry'}
+      365                          </button>
+      366                      </form>
+      367                  </div>
+      368  
+      216 -                {/* List */}                                  
+      217 -                <div style={{ fontWeight: 600, fontSize: 15, m
+          -arginBottom: 12, color: 'var(--text)' }}>                     
+      369 +                {/* ── Saved entries ── */}                   
+      370 +                <div style={{ fontWeight: 600, fontSize: 15, m
+          +arginBottom: 12, color: 'var(--text)', marginTop: 8 }}>       
+      371                      Saved Entries ({entries.length})
+      372                  </div>
+      373  
+     ...
+      376                  ) : entries.length === 0 ? (
+      377                      <div style={{ ...card, textAlign: 'center'
+           , color: 'var(--text-3)', padding: 40 }}>
+      378                          <div style={{ fontSize: 32, marginBott
+           om: 8 }}>📭</div>
+      226 -                        <div>No FAQ entries yet. Add one above
+          - to teach the bot.</div>                                      
+      379 +                        <div>No FAQ entries yet. Generate from
+          + a document or add one manually.</div>                        
+      380                      </div>
+      381                  ) : (
+      382                      entries.map(entry => (
+      230 -                        <div key={entry.id} style={{ ...card, 
+          -border: editId === entry.id ? '1.5px solid var(--primary-accen
+          -t)' : '1px solid var(--border)' }}>                           
+      383 +                        <div key={entry.id} style={{ ...card, 
+          +border: editId === entry.id ? '1.5px solid var(--primary-accen
+          +t)' : '1px solid var(--border)', padding: 20 }}>              
+      384                              {editId === entry.id ? (
+      232 -                                /* Edit mode */               
+      385                                  <div>
+      386                                      <div style={{ marginBottom
+           : 10 }}>
+      387                                          <label style={{ displa
+           y: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-
+           3)', marginBottom: 4, textTransform: 'uppercase' }}>Section</l
+           abel>
+     ...
+      397                                      </div>
+      398                                      <div style={{ display: 'fl
+           ex', gap: 8 }}>
+      399                                          <button style={btnSave
+           } onClick={() => handleUpdate(entry.id)} disabled={saving}>{sa
+           ving ? 'Saving...' : 'Save'}</button>
+      248 -                                        <button style={btnSeco
+          -ndary} onClick={cancelEdit}>Cancel</button>                   
+      400 +                                        <button style={btnSeco
+          +ndary} onClick={() => setEditId(null)}>Cancel</button>        
+      401                                      </div>
+      402                                  </div>
+      403                              ) : (
+      252 -                                /* View mode */               
+      404                                  <div>
+      405                                      <div style={{ display: 'fl
+           ex', justifyContent: 'space-between', alignItems: 'flex-start'
+           , gap: 12 }}>
+      406                                          <div style={{ flex: 1 
+           }}>
+      407                                              {entry.section && 
+           (
+      257 -                                                <span style={{
+      258 -                                                    display: '
+          -inline-block', background: '#dcfce7', color: 'var(--primary)',
+      259 -                                                    borderRadi
+          -us: 6, padding: '2px 8px', fontSize: 11, fontWeight: 600,     
+      260 -                                                    marginBott
+          -om: 8, textTransform: 'uppercase', letterSpacing: '0.4px',    
+      261 -                                                }}>           
+      408 +                                                <span style={{
+          + display: 'inline-block', background: '#dcfce7', color: 'var(-
+          +-primary)', borderRadius: 6, padding: '2px 8px', fontSize: 11,
+          + fontWeight: 600, marginBottom: 8, textTransform: 'uppercase',
+          + letterSpacing: '0.4px' }}>                                   
+      409                                                      {entry.sec
+           tion}
+      410                                                  </span>
+      411                                              )}
+      412                                              <div style={{ font
+           Weight: 600, color: 'var(--text)', marginBottom: 8, fontSize: 
+           14 }}>
+      413                                                  Q: {entry.ques
+           tion}
+      414                                              </div>
+      268 -                                            <div style={{     
+      269 -                                                color: 'var(--
+          -text-2)', fontSize: 13, lineHeight: 1.65,                     
+      270 -                                                background: 'v
+          -ar(--surface-2)', borderRadius: 8,                            
+      271 -                                                padding: '10px
+          - 14px', whiteSpace: 'pre-wrap',                               
+      272 -                                            }}>               
+      415 +                                            <div style={{ colo
+          +r: 'var(--text-2)', fontSize: 13, lineHeight: 1.65, background
+          +: 'var(--surface-2)', borderRadius: 8, padding: '10px 14px', w
+          +hiteSpace: 'pre-wrap' }}>                                     
+      416                                                  {entry.answer}
+      417                                              </div>
+      418                                          </div>
+     ...
+      423                                      </div>
+      424                                      <div style={{ marginTop: 1
+           0, color: 'var(--text-3)', fontSize: 11 }}>
+      425                                          ID #{entry.id} · Added
+            {formatDate(entry.created_at)}
+      283 -                                        {entry.updated_at !== 
+          -entry.created_at && ` · Updated ${formatDate(entry.updated_at)
+          -}`}                                                           
+      426                                      </div>
+      427                                  </div>
+      428                              )}
+  ⎿  You've hit your limit · resets 1pm (Asia/Manila)
+     /upgrade or /extra-usage to finish what you’re working on.
+
+✻ Worked for 2m 47s
+
+❯ /extra-usage                                                                  
+  ⎿  Login successful
+
+❯ continue                                                                      
+  ⎿  You've hit your limit · resets 1pm (Asia/Manila)
+     /upgrade or /extra-usage to finish what you’re working on.

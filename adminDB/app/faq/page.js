@@ -10,6 +10,45 @@ function formatDate(dateStr) {
     });
 }
 
+const inputStyle = {
+    width: '100%', padding: '10px 12px', borderRadius: 8,
+    border: '1px solid var(--border)', fontSize: 13,
+    outline: 'none', fontFamily: 'inherit', color: 'var(--text)',
+    background: 'var(--surface-2)',
+};
+
+const card = {
+    background: 'var(--surface)', borderRadius: 'var(--radius)',
+    boxShadow: 'var(--shadow)', padding: 24, marginBottom: 16,
+};
+
+const btnPrimary = (disabled) => ({
+    padding: '10px 20px', borderRadius: 8, border: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
+    background: 'var(--primary)', color: '#fff', fontWeight: 600, fontSize: 13,
+    opacity: disabled ? 0.6 : 1,
+});
+
+const btnGreen = (disabled) => ({
+    padding: '8px 16px', borderRadius: 8, border: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
+    background: '#16a34a', color: '#fff', fontWeight: 600, fontSize: 13,
+    opacity: disabled ? 0.6 : 1,
+});
+
+const btnSecondary = {
+    padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer',
+    background: '#f1f5f9', color: 'var(--text-2)', fontWeight: 500, fontSize: 12,
+};
+
+const btnDanger = {
+    padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer',
+    background: '#fee2e2', color: '#dc2626', fontWeight: 500, fontSize: 12,
+};
+
+const btnSave = {
+    padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer',
+    background: 'var(--primary)', color: '#fff', fontWeight: 500, fontSize: 12,
+};
+
 export default function FAQPage() {
     const [entries, setEntries] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -17,7 +56,7 @@ export default function FAQPage() {
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
 
-    // Form state
+    // Manual form
     const [question, setQuestion] = useState('');
     const [answer, setAnswer] = useState('');
     const [section, setSection] = useState('');
@@ -28,7 +67,15 @@ export default function FAQPage() {
     const [editAnswer, setEditAnswer] = useState('');
     const [editSection, setEditSection] = useState('');
 
-    const load = () => {
+    // Generate-from-document state
+    const [docs, setDocs] = useState([]);
+    const [selectedDocId, setSelectedDocId] = useState('');
+    const [generating, setGenerating] = useState(false);
+    const [proposals, setProposals] = useState([]);
+    const [selectedProposals, setSelectedProposals] = useState(new Set());
+    const [savingProposals, setSavingProposals] = useState(false);
+
+    const loadEntries = () => {
         setLoading(true);
         fetch('/api/faq')
             .then(r => r.json())
@@ -36,13 +83,21 @@ export default function FAQPage() {
             .catch(() => setLoading(false));
     };
 
-    useEffect(() => { load(); }, []);
+    const loadDocs = () => {
+        fetch('/api/general-documents')
+            .then(r => r.json())
+            .then(res => setDocs(res.data || []))
+            .catch(() => {});
+    };
+
+    useEffect(() => { loadEntries(); loadDocs(); }, []);
 
     const flash = (msg, isError = false) => {
-        if (isError) { setError(msg); setTimeout(() => setError(''), 4000); }
+        if (isError) { setError(msg); setTimeout(() => setError(''), 5000); }
         else { setSuccess(msg); setTimeout(() => setSuccess(''), 3000); }
     };
 
+    // ── Manual create ──
     const handleCreate = async (e) => {
         e.preventDefault();
         if (!question.trim() || !answer.trim()) return flash('Question and Answer are required.', true);
@@ -57,19 +112,18 @@ export default function FAQPage() {
             if (!res.ok) throw new Error(data.detail || data.error || 'Failed to save.');
             flash('FAQ entry saved! The bot will now use this answer.');
             setQuestion(''); setAnswer(''); setSection('');
-            load();
+            loadEntries();
         } catch (err) { flash(err.message, true); }
         finally { setSaving(false); }
     };
 
+    // ── Edit ──
     const startEdit = (entry) => {
         setEditId(entry.id);
         setEditQuestion(entry.question);
         setEditAnswer(entry.answer);
         setEditSection(entry.section || '');
     };
-
-    const cancelEdit = () => { setEditId(null); };
 
     const handleUpdate = async (id) => {
         if (!editQuestion.trim() || !editAnswer.trim()) return flash('Question and Answer are required.', true);
@@ -84,7 +138,7 @@ export default function FAQPage() {
             if (!res.ok) throw new Error(data.detail || data.error || 'Failed to update.');
             flash('FAQ entry updated.');
             setEditId(null);
-            load();
+            loadEntries();
         } catch (err) { flash(err.message, true); }
         finally { setSaving(false); }
     };
@@ -96,125 +150,224 @@ export default function FAQPage() {
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || data.error || 'Failed to delete.');
             flash('FAQ entry deleted.');
-            load();
+            loadEntries();
         } catch (err) { flash(err.message, true); }
     };
 
-    const card = {
-        background: 'var(--surface)', borderRadius: 'var(--radius)',
-        boxShadow: 'var(--shadow)', padding: 24, marginBottom: 16,
+    // ── Generate from document ──
+    const handleGenerate = async () => {
+        if (!selectedDocId) return flash('Please select a document first.', true);
+        setGenerating(true);
+        setProposals([]);
+        setSelectedProposals(new Set());
+        try {
+            // Fetch full doc to get extracted text
+            const docRes = await fetch(`/api/general-documents/${selectedDocId}`);
+            const docData = await docRes.json();
+            if (!docData.success) throw new Error('Could not fetch document.');
+
+            const extracted = docData.data.extracted_data;
+            const text = (typeof extracted === 'object' ? extracted.text : '') || '';
+            if (!text.trim()) throw new Error('This document has no extracted text to parse.');
+
+            const sugRes = await fetch('/api/faq/suggest', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, filename: docData.data.original_name }),
+            });
+            const sugData = await sugRes.json();
+            if (!sugData.success) throw new Error(sugData.error || 'Failed to generate suggestions.');
+
+            if (sugData.proposals.length === 0) {
+                flash('No sections found in this document. Make sure it has SECTION headers.', true);
+            } else {
+                setProposals(sugData.proposals);
+                // Select all by default
+                setSelectedProposals(new Set(sugData.proposals.map((_, i) => i)));
+            }
+        } catch (err) { flash(err.message, true); }
+        finally { setGenerating(false); }
     };
 
-    const inputStyle = {
-        width: '100%', padding: '10px 12px', borderRadius: 8,
-        border: '1px solid var(--border)', fontSize: 13,
-        outline: 'none', fontFamily: 'inherit', color: 'var(--text)',
-        background: 'var(--surface-2)',
+    const toggleProposal = (idx) => {
+        setSelectedProposals(prev => {
+            const next = new Set(prev);
+            if (next.has(idx)) next.delete(idx); else next.add(idx);
+            return next;
+        });
     };
 
-    const btnPrimary = {
-        padding: '10px 20px', borderRadius: 8, border: 'none', cursor: 'pointer',
-        background: 'var(--primary)', color: '#fff', fontWeight: 600, fontSize: 13,
-        opacity: saving ? 0.7 : 1,
+    const toggleAllProposals = () => {
+        if (selectedProposals.size === proposals.length) setSelectedProposals(new Set());
+        else setSelectedProposals(new Set(proposals.map((_, i) => i)));
     };
 
-    const btnDanger = {
-        padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer',
-        background: '#fee2e2', color: '#dc2626', fontWeight: 500, fontSize: 12,
-    };
-
-    const btnSecondary = {
-        padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer',
-        background: '#f1f5f9', color: 'var(--text-2)', fontWeight: 500, fontSize: 12,
-    };
-
-    const btnSave = {
-        padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer',
-        background: 'var(--primary)', color: '#fff', fontWeight: 500, fontSize: 12,
+    const handleSaveProposals = async () => {
+        const toSave = proposals.filter((_, i) => selectedProposals.has(i));
+        if (toSave.length === 0) return flash('Select at least one entry to save.', true);
+        setSavingProposals(true);
+        let saved = 0;
+        for (const p of toSave) {
+            try {
+                const res = await fetch('/api/faq', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question: p.question, answer: p.answer, section: p.section }),
+                });
+                if (res.ok) saved++;
+            } catch { /* skip */ }
+        }
+        flash(`Saved ${saved} FAQ entries. The bot can now answer these questions.`);
+        setProposals([]);
+        setSelectedProposals(new Set());
+        loadEntries();
+        setSavingProposals(false);
     };
 
     return (
         <div style={{ marginLeft: 'var(--sidebar-w)', minHeight: '100vh', background: 'var(--bg)' }}>
-            <Header title="FAQ / Curated Answers" />
-            <main style={{ padding: '24px 32px', maxWidth: 900 }}>
+            <Header title="FAQ / Bot Training" />
+            <main style={{ padding: '24px 32px', maxWidth: 960 }}>
 
-                {/* Description */}
-                <div style={{ ...card, background: '#f0fdf4', border: '1px solid #bbf7d0', marginBottom: 24 }}>
+                {/* Info banner */}
+                <div style={{ ...card, background: '#f0fdf4', border: '1px solid #bbf7d0', marginBottom: 24, padding: '16px 20px' }}>
                     <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-                        <span style={{ fontSize: 22 }}>💡</span>
-                        <div>
-                            <div style={{ fontWeight: 600, color: 'var(--primary)', marginBottom: 4 }}>How this works</div>
-                            <div style={{ color: 'var(--text-2)', fontSize: 13, lineHeight: 1.6 }}>
-                                Save exact Q&amp;A pairs here to teach the bot precise answers. When a user asks something
-                                that matches a saved question (≥72% similarity), the bot returns your curated answer directly —
-                                no guessing, no hallucination. Takes effect immediately without restarting.
-                            </div>
+                        <span style={{ fontSize: 20 }}>💡</span>
+                        <div style={{ color: 'var(--text-2)', fontSize: 13, lineHeight: 1.6 }}>
+                            <strong style={{ color: 'var(--primary)' }}>How this works: </strong>
+                            Save exact Q&A pairs to teach the bot precise answers. When a user's question matches a saved entry
+                            (≥72% similarity + exact section number), the bot returns your answer directly.
+                            Use <strong>Generate from Document</strong> to auto-extract all sections at once.
                         </div>
                     </div>
                 </div>
 
                 {/* Alerts */}
-                {error && (
-                    <div style={{ background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: 8, padding: '12px 16px', marginBottom: 16, color: '#dc2626', fontSize: 13 }}>
-                        {error}
-                    </div>
-                )}
-                {success && (
-                    <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8, padding: '12px 16px', marginBottom: 16, color: '#16a34a', fontSize: 13 }}>
-                        {success}
-                    </div>
-                )}
+                {error && <div style={{ background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: 8, padding: '12px 16px', marginBottom: 16, color: '#dc2626', fontSize: 13 }}>{error}</div>}
+                {success && <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8, padding: '12px 16px', marginBottom: 16, color: '#16a34a', fontSize: 13 }}>{success}</div>}
 
-                {/* Create form */}
+                {/* ── Generate from Document ── */}
+                <div style={{ ...card, border: '1.5px solid #bfdbfe' }}>
+                    <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, color: 'var(--text)' }}>
+                        Generate from Document
+                    </div>
+                    <div style={{ color: 'var(--text-2)', fontSize: 12, marginBottom: 14 }}>
+                        Pick an uploaded document — the system will extract every section and suggest FAQ entries for you to review and save.
+                    </div>
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <select
+                            style={{ ...inputStyle, width: 320 }}
+                            value={selectedDocId}
+                            onChange={e => { setSelectedDocId(e.target.value); setProposals([]); setSelectedProposals(new Set()); }}
+                        >
+                            <option value="">— Select a document —</option>
+                            {docs.map(d => (
+                                <option key={d.id} value={d.id}>{d.original_name}</option>
+                            ))}
+                        </select>
+                        <button style={btnGreen(generating || !selectedDocId)} onClick={handleGenerate} disabled={generating || !selectedDocId}>
+                            {generating ? 'Extracting sections...' : 'Extract Sections'}
+                        </button>
+                    </div>
+
+                    {/* Proposals list */}
+                    {proposals.length > 0 && (
+                        <div style={{ marginTop: 20 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                                <div style={{ fontWeight: 600, fontSize: 13 }}>
+                                    {proposals.length} sections found — review and save:
+                                </div>
+                                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                    <button style={btnSecondary} onClick={toggleAllProposals}>
+                                        {selectedProposals.size === proposals.length ? 'Deselect All' : 'Select All'}
+                                    </button>
+                                    <button
+                                        style={btnGreen(savingProposals || selectedProposals.size === 0)}
+                                        onClick={handleSaveProposals}
+                                        disabled={savingProposals || selectedProposals.size === 0}
+                                    >
+                                        {savingProposals ? 'Saving...' : `Save Selected (${selectedProposals.size})`}
+                                    </button>
+                                </div>
+                            </div>
+
+                            {proposals.map((p, idx) => (
+                                <div key={idx} style={{
+                                    border: `1.5px solid ${selectedProposals.has(idx) ? 'var(--primary-accent)' : 'var(--border)'}`,
+                                    borderRadius: 8, padding: 14, marginBottom: 10,
+                                    background: selectedProposals.has(idx) ? '#f0fdf4' : 'var(--surface-2)',
+                                    cursor: 'pointer',
+                                }} onClick={() => toggleProposal(idx)}>
+                                    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedProposals.has(idx)}
+                                            onChange={() => toggleProposal(idx)}
+                                            onClick={e => e.stopPropagation()}
+                                            style={{ marginTop: 3, flexShrink: 0, accentColor: 'var(--primary)' }}
+                                        />
+                                        <div style={{ flex: 1 }}>
+                                            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                                                <span style={{
+                                                    background: '#dcfce7', color: 'var(--primary)', borderRadius: 5,
+                                                    padding: '1px 8px', fontSize: 11, fontWeight: 600, textTransform: 'uppercase',
+                                                }}>{p.section}</span>
+                                            </div>
+                                            <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)', marginBottom: 4 }}>
+                                                Q: {p.question}
+                                            </div>
+                                            <div style={{
+                                                fontSize: 12, color: 'var(--text-2)', lineHeight: 1.55,
+                                                maxHeight: 80, overflow: 'hidden', position: 'relative',
+                                            }}>
+                                                {p.answer.slice(0, 300)}{p.answer.length > 300 ? '...' : ''}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                {/* ── Manual create ── */}
                 <div style={card}>
-                    <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 16, color: 'var(--text)' }}>
-                        Add New FAQ Entry
+                    <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, color: 'var(--text)' }}>Add Entry Manually</div>
+                    <div style={{ color: 'var(--text-2)', fontSize: 12, marginBottom: 14 }}>
+                        Write your own question and answer for anything not covered by a document.
                     </div>
                     <form onSubmit={handleCreate}>
-                        <div style={{ marginBottom: 12 }}>
-                            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                                Section / Label <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>(optional)</span>
-                            </label>
-                            <input
-                                style={{ ...inputStyle, width: 260 }}
-                                placeholder="e.g. Section 3, LGU Vision, Tourism"
-                                value={section}
-                                onChange={e => setSection(e.target.value)}
-                            />
-                        </div>
-                        <div style={{ marginBottom: 12 }}>
-                            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                                Question <span style={{ color: '#dc2626' }}>*</span>
-                            </label>
-                            <input
-                                style={inputStyle}
-                                placeholder="e.g. What is Section 3? / Tell me about Section 3"
-                                value={question}
-                                onChange={e => setQuestion(e.target.value)}
-                            />
-                            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
-                                The bot matches user questions to this using semantic similarity. Write it the way users would ask.
+                        <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+                            <div style={{ flex: '0 0 260px' }}>
+                                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                    Section / Label <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>(optional)</span>
+                                </label>
+                                <input style={inputStyle} placeholder="e.g. Section 3" value={section} onChange={e => setSection(e.target.value)} />
                             </div>
                         </div>
+                        <div style={{ marginBottom: 12 }}>
+                            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                Question <span style={{ color: '#dc2626' }}>*</span>
+                            </label>
+                            <input style={inputStyle} placeholder="e.g. What is Section 3? / Tell me about Section 3" value={question} onChange={e => setQuestion(e.target.value)} />
+                            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}>Write it the way users would ask.</div>
+                        </div>
                         <div style={{ marginBottom: 16 }}>
-                            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                                 Answer <span style={{ color: '#dc2626' }}>*</span>
                             </label>
-                            <textarea
-                                style={{ ...inputStyle, minHeight: 120, resize: 'vertical', lineHeight: 1.6 }}
+                            <textarea style={{ ...inputStyle, minHeight: 120, resize: 'vertical', lineHeight: 1.6 }}
                                 placeholder="Write the exact, complete answer the bot should give..."
-                                value={answer}
-                                onChange={e => setAnswer(e.target.value)}
-                            />
+                                value={answer} onChange={e => setAnswer(e.target.value)} />
                         </div>
-                        <button type="submit" style={btnPrimary} disabled={saving}>
+                        <button type="submit" style={btnPrimary(saving)} disabled={saving}>
                             {saving ? 'Saving...' : '+ Save FAQ Entry'}
                         </button>
                     </form>
                 </div>
 
-                {/* List */}
-                <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 12, color: 'var(--text)' }}>
+                {/* ── Saved entries ── */}
+                <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 12, color: 'var(--text)', marginTop: 8 }}>
                     Saved Entries ({entries.length})
                 </div>
 
@@ -223,13 +376,12 @@ export default function FAQPage() {
                 ) : entries.length === 0 ? (
                     <div style={{ ...card, textAlign: 'center', color: 'var(--text-3)', padding: 40 }}>
                         <div style={{ fontSize: 32, marginBottom: 8 }}>📭</div>
-                        <div>No FAQ entries yet. Add one above to teach the bot.</div>
+                        <div>No FAQ entries yet. Generate from a document or add one manually.</div>
                     </div>
                 ) : (
                     entries.map(entry => (
-                        <div key={entry.id} style={{ ...card, border: editId === entry.id ? '1.5px solid var(--primary-accent)' : '1px solid var(--border)' }}>
+                        <div key={entry.id} style={{ ...card, border: editId === entry.id ? '1.5px solid var(--primary-accent)' : '1px solid var(--border)', padding: 20 }}>
                             {editId === entry.id ? (
-                                /* Edit mode */
                                 <div>
                                     <div style={{ marginBottom: 10 }}>
                                         <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-3)', marginBottom: 4, textTransform: 'uppercase' }}>Section</label>
@@ -245,31 +397,22 @@ export default function FAQPage() {
                                     </div>
                                     <div style={{ display: 'flex', gap: 8 }}>
                                         <button style={btnSave} onClick={() => handleUpdate(entry.id)} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
-                                        <button style={btnSecondary} onClick={cancelEdit}>Cancel</button>
+                                        <button style={btnSecondary} onClick={() => setEditId(null)}>Cancel</button>
                                     </div>
                                 </div>
                             ) : (
-                                /* View mode */
                                 <div>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
                                         <div style={{ flex: 1 }}>
                                             {entry.section && (
-                                                <span style={{
-                                                    display: 'inline-block', background: '#dcfce7', color: 'var(--primary)',
-                                                    borderRadius: 6, padding: '2px 8px', fontSize: 11, fontWeight: 600,
-                                                    marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.4px',
-                                                }}>
+                                                <span style={{ display: 'inline-block', background: '#dcfce7', color: 'var(--primary)', borderRadius: 6, padding: '2px 8px', fontSize: 11, fontWeight: 600, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
                                                     {entry.section}
                                                 </span>
                                             )}
                                             <div style={{ fontWeight: 600, color: 'var(--text)', marginBottom: 8, fontSize: 14 }}>
                                                 Q: {entry.question}
                                             </div>
-                                            <div style={{
-                                                color: 'var(--text-2)', fontSize: 13, lineHeight: 1.65,
-                                                background: 'var(--surface-2)', borderRadius: 8,
-                                                padding: '10px 14px', whiteSpace: 'pre-wrap',
-                                            }}>
+                                            <div style={{ color: 'var(--text-2)', fontSize: 13, lineHeight: 1.65, background: 'var(--surface-2)', borderRadius: 8, padding: '10px 14px', whiteSpace: 'pre-wrap' }}>
                                                 {entry.answer}
                                             </div>
                                         </div>
@@ -280,7 +423,6 @@ export default function FAQPage() {
                                     </div>
                                     <div style={{ marginTop: 10, color: 'var(--text-3)', fontSize: 11 }}>
                                         ID #{entry.id} · Added {formatDate(entry.created_at)}
-                                        {entry.updated_at !== entry.created_at && ` · Updated ${formatDate(entry.updated_at)}`}
                                     </div>
                                 </div>
                             )}

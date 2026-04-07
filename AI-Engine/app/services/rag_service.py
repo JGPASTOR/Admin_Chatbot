@@ -549,8 +549,12 @@ def faq_lookup(query: str) -> Optional[str]:
     """
     Check if the query semantically matches any curated FAQ question.
     Returns the stored answer if similarity >= FAQ_THRESHOLD, else None.
+
+    Section-number guard: if the query mentions "section N", only FAQ entries
+    whose question also mentions "section N" are eligible — prevents "section 2"
+    from matching a "section 3" FAQ entry even when their semantic scores are close.
     """
-    global _faq_embeddings, _faq_answers, _embedding_model
+    global _faq_embeddings, _faq_answers, _faq_questions, _embedding_model
 
     if _embedding_model is None or _faq_embeddings is None or len(_faq_answers) == 0:
         return None
@@ -561,15 +565,29 @@ def faq_lookup(query: str) -> Optional[str]:
         with _faq_lock:
             emb_snapshot = _faq_embeddings.copy()
             answers_snapshot = list(_faq_answers)
+            questions_snapshot = list(_faq_questions)
 
         query_emb = _embedding_model.encode([query], convert_to_numpy=True)
         sims = cos_sim(query_emb, emb_snapshot)[0]
-        best_idx = int(np.argmax(sims))
-        best_score = float(sims[best_idx])
 
-        if best_score >= FAQ_THRESHOLD:
-            logger.info(f"[FAQ] Match found (score={best_score:.3f}) for query: '{query[:60]}'")
-            return answers_snapshot[best_idx]
+        # Section-number guard: extract "section N" from query
+        section_match = re.search(r'\bsection\s+(\d+)\b', query.lower())
+        query_section_num = section_match.group(1) if section_match else None
+
+        # Sort candidates by similarity descending and pick best eligible one
+        ranked = sorted(enumerate(sims), key=lambda x: x[1], reverse=True)
+        for idx, score in ranked:
+            if score < FAQ_THRESHOLD:
+                break  # remaining scores are all lower
+
+            if query_section_num is not None:
+                # Only accept this FAQ entry if its question has the SAME section number
+                faq_section = re.search(r'\bsection\s+(\d+)\b', questions_snapshot[idx].lower())
+                if not faq_section or faq_section.group(1) != query_section_num:
+                    continue  # wrong section number — skip
+
+            logger.info(f"[FAQ] Match found (score={score:.3f}) for query: '{query[:60]}'")
+            return answers_snapshot[idx]
 
         return None
     except Exception as e:

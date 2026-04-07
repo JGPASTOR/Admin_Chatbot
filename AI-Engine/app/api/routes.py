@@ -20,6 +20,7 @@ from app.schemas.chat import (
     RagRebuildResponse,
     TopicSelectRequest, TopicSelectResponse,
     FAQCreateRequest, FAQUpdateRequest, FAQListResponse, FAQDeleteResponse,
+    FAQSuggestRequest,
 )
 from app.services import rag_service
 from app.services.conversation import process_message, stream_message, classifier
@@ -352,6 +353,70 @@ async def rag_rebuild(request: Request):
 
 
 # ── FAQ / Curated Answer Endpoints ────────────────────────────────────────────
+
+@router.post("/faq/suggest", response_model=dict)
+@limiter.limit("20/minute")
+async def faq_suggest(request: Request, payload: FAQSuggestRequest):
+    """
+    Parse a document's extracted text into proposed FAQ entries.
+
+    Splits on SECTION headers and returns a list of {section, question, answer}
+    objects ready for the admin to review and save. No LLM required — pure
+    text extraction so it works even when the LLM is offline.
+    """
+    text = payload.text.strip()
+    filename = payload.filename or "document"
+
+    # Split on SECTION headers (e.g. "SECTION 1 — LGU VISION", "Section 2.")
+    section_pattern = re.compile(r'(?=\bSECTION\s+\d+\b)', re.IGNORECASE)
+    raw_sections = section_pattern.split(text)
+
+    proposals = []
+    for raw in raw_sections:
+        raw = raw.strip()
+        if not raw:
+            continue
+
+        lines = raw.splitlines()
+        # First non-empty line is the section header
+        header = next((l.strip() for l in lines if l.strip()), "")
+        if not header:
+            continue
+
+        # Body = everything after the header, trimmed
+        body_lines = lines[1:]
+        body = "\n".join(l for l in body_lines if l.strip()).strip()
+
+        if not body:
+            # Header-only section (no content) — still propose it so admin can fill in the answer
+            body = header
+
+        # Extract section number for the label
+        num_match = re.search(r'section\s+(\d+)', header, re.IGNORECASE)
+        section_label = f"Section {num_match.group(1)}" if num_match else header[:40]
+
+        # Generate a natural question from the header
+        # Remove "SECTION N —" prefix, keep the topic part
+        topic = re.sub(r'^\s*SECTION\s+\d+\s*[—\-:\.]*\s*', '', header, flags=re.IGNORECASE).strip()
+        if topic:
+            question = f"What is {topic}?" if not topic.lower().startswith("what") else topic
+        else:
+            question = f"What is {section_label}?"
+
+        proposals.append({
+            "section": section_label,
+            "question": question,
+            "answer": body[:2000],  # cap at 2000 chars to keep answers focused
+            "header": header,
+        })
+
+    return {
+        "success": True,
+        "filename": filename,
+        "total": len(proposals),
+        "proposals": proposals,
+    }
+
 
 @router.post("/faq", response_model=dict)
 @limiter.limit("30/minute")

@@ -125,6 +125,12 @@ class TopicSelectResponse(BaseModel):
     topic: str = Field(..., description="The confirmed selected topic")
 
 
+class FAQSuggestRequest(BaseModel):
+    """Request body for POST /api/faq/suggest — generate FAQ proposals from document text."""
+    text: str = Field(..., min_length=10, description="Extracted plain text from the document")
+    filename: Optional[str] = Field(None, description="Document filename for labeling")
+
+
 class FAQCreateRequest(BaseModel):
     """Request body for POST /api/faq — save a curated Q&A pair."""
     question: str = Field(..., min_length=5, description="The canonical question (used for semantic matching)")
