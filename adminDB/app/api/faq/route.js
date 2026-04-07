@@ -3,40 +3,36 @@ import { NextResponse } from 'next/server';
 
 const AI_ENGINE = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
 
-// Run once per process — guarantees the table exists regardless of restart order
-let _tableReady = false;
 async function ensureTable() {
-    if (_tableReady) return;
-    await pool.query(`
-        CREATE TABLE IF NOT EXISTS \`faq_entries\` (
-            \`id\`         INT          NOT NULL AUTO_INCREMENT PRIMARY KEY,
-            \`question\`   TEXT         NOT NULL,
-            \`answer\`     TEXT         NOT NULL,
-            \`section\`    VARCHAR(100) DEFAULT NULL,
-            \`created_at\` DATETIME     DEFAULT CURRENT_TIMESTAMP,
-            \`updated_at\` DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    `);
-    _tableReady = true;
-}
-
-// Tell the AI Engine to hot-reload its FAQ cache (fire-and-forget)
-async function notifyEngine(action, payload) {
+    const conn = await pool.getConnection();
     try {
-        const url = `${AI_ENGINE}/api/faq${action}`;
-        const method = payload?.method || 'POST';
-        await fetch(url, {
-            method,
-            headers: { 'Content-Type': 'application/json' },
-            body: payload?.body ? JSON.stringify(payload.body) : undefined,
-            signal: AbortSignal.timeout(5000),
-        });
-    } catch {
-        // AI Engine might be offline — cache will sync on next restart
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS \`faq_entries\` (
+                \`id\`         INT          NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                \`question\`   TEXT         NOT NULL,
+                \`answer\`     TEXT         NOT NULL,
+                \`section\`    VARCHAR(100) DEFAULT NULL,
+                \`created_at\` DATETIME     DEFAULT CURRENT_TIMESTAMP,
+                \`updated_at\` DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
+    } finally {
+        conn.release();
     }
 }
 
-/* ── GET — list all FAQ entries ── */
+async function notifyEngine(path, method, body) {
+    try {
+        await fetch(`${AI_ENGINE}/api/faq${path}`, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: body ? JSON.stringify(body) : undefined,
+            signal: AbortSignal.timeout(5000),
+        });
+    } catch { /* AI Engine offline — syncs on restart */ }
+}
+
+/* ── GET ── */
 export async function GET() {
     try {
         await ensureTable();
@@ -53,30 +49,42 @@ export async function GET() {
             })),
         });
     } catch (err) {
+        console.error('[FAQ GET]', err);
         return NextResponse.json({ success: false, error: err.message }, { status: 500 });
     }
 }
 
-/* ── POST — create a new FAQ entry ── */
+/* ── POST ── */
 export async function POST(request) {
     try {
         await ensureTable();
-        const { question, answer, section } = await request.json();
-        if (!question?.trim() || !answer?.trim()) {
+
+        const body = await request.json();
+        const question = body?.question?.trim();
+        const answer   = body?.answer?.trim();
+        const section  = body?.section?.trim() || null;
+
+        if (!question || !answer) {
             return NextResponse.json({ success: false, error: 'question and answer are required.' }, { status: 400 });
         }
 
-        const [result] = await pool.query(
-            'INSERT INTO faq_entries (question, answer, section) VALUES (?, ?, ?)',
-            [question.trim(), answer.trim(), section?.trim() || null]
-        );
-        const id = result.insertId;
+        const conn = await pool.getConnection();
+        let id;
+        try {
+            const [result] = await conn.query(
+                'INSERT INTO `faq_entries` (`question`, `answer`, `section`) VALUES (?, ?, ?)',
+                [question, answer, section]
+            );
+            id = result.insertId;
+        } finally {
+            conn.release();
+        }
 
-        // Hot-update AI Engine cache (non-blocking)
-        notifyEngine('', { method: 'POST', body: { question: question.trim(), answer: answer.trim(), section: section?.trim() || null } });
+        notifyEngine('', 'POST', { question, answer, section });
 
-        return NextResponse.json({ success: true, message: 'FAQ entry saved.', id, question, answer, section });
+        return NextResponse.json({ success: true, message: 'FAQ entry saved.', id });
     } catch (err) {
+        console.error('[FAQ POST]', err);
         return NextResponse.json({ success: false, error: err.message }, { status: 500 });
     }
 }

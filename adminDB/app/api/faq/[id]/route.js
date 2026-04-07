@@ -11,53 +11,60 @@ async function notifyEngine(path, method, body) {
             body: body ? JSON.stringify(body) : undefined,
             signal: AbortSignal.timeout(5000),
         });
-    } catch {
-        // AI Engine offline — cache syncs on next restart
-    }
+    } catch { /* AI Engine offline */ }
 }
 
-/* ── PUT — update a FAQ entry ── */
+/* ── PUT ── */
 export async function PUT(request, { params }) {
     try {
         const { id } = await params;
-        const { question, answer, section } = await request.json();
+        const body = await request.json();
+        const question = body?.question?.trim();
+        const answer   = body?.answer?.trim();
+        const section  = body?.section?.trim() || null;
 
-        const [rows] = await pool.query('SELECT id FROM faq_entries WHERE id = ?', [id]);
-        if (rows.length === 0) {
-            return NextResponse.json({ success: false, error: 'Not found.' }, { status: 404 });
+        const conn = await pool.getConnection();
+        try {
+            const [rows] = await conn.query('SELECT id FROM `faq_entries` WHERE id = ?', [id]);
+            if (rows.length === 0) {
+                return NextResponse.json({ success: false, error: 'Not found.' }, { status: 404 });
+            }
+            await conn.query(
+                'UPDATE `faq_entries` SET `question`=?, `answer`=?, `section`=?, `updated_at`=NOW() WHERE id=?',
+                [question, answer, section, id]
+            );
+        } finally {
+            conn.release();
         }
 
-        await pool.query(
-            'UPDATE faq_entries SET question = ?, answer = ?, section = ?, updated_at = NOW() WHERE id = ?',
-            [question?.trim(), answer?.trim(), section?.trim() || null, id]
-        );
-
-        // Sync AI Engine cache
-        notifyEngine(`/${id}`, 'PUT', { question: question?.trim(), answer: answer?.trim(), section: section?.trim() || null });
-
-        return NextResponse.json({ success: true, message: 'FAQ entry updated.', id: Number(id) });
+        notifyEngine(`/${id}`, 'PUT', { question, answer, section });
+        return NextResponse.json({ success: true, message: 'Updated.', id: Number(id) });
     } catch (err) {
+        console.error('[FAQ PUT]', err);
         return NextResponse.json({ success: false, error: err.message }, { status: 500 });
     }
 }
 
-/* ── DELETE — remove a FAQ entry ── */
+/* ── DELETE ── */
 export async function DELETE(request, { params }) {
     try {
         const { id } = await params;
 
-        const [rows] = await pool.query('SELECT id FROM faq_entries WHERE id = ?', [id]);
-        if (rows.length === 0) {
-            return NextResponse.json({ success: false, error: 'Not found.' }, { status: 404 });
+        const conn = await pool.getConnection();
+        try {
+            const [rows] = await conn.query('SELECT id FROM `faq_entries` WHERE id = ?', [id]);
+            if (rows.length === 0) {
+                return NextResponse.json({ success: false, error: 'Not found.' }, { status: 404 });
+            }
+            await conn.query('DELETE FROM `faq_entries` WHERE id = ?', [id]);
+        } finally {
+            conn.release();
         }
 
-        await pool.query('DELETE FROM faq_entries WHERE id = ?', [id]);
-
-        // Sync AI Engine cache
         notifyEngine(`/${id}`, 'DELETE');
-
         return NextResponse.json({ success: true, message: `FAQ entry ${id} deleted.` });
     } catch (err) {
+        console.error('[FAQ DELETE]', err);
         return NextResponse.json({ success: false, error: err.message }, { status: 500 });
     }
 }
