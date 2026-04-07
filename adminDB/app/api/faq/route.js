@@ -41,9 +41,16 @@ async function notifyEngine(path, method, body) {
 export async function GET() {
     try {
         await ensureTable();
-        const [rows] = await pool.query(
-            'SELECT id, question, answer, section, doc_id, doc_name, created_at, updated_at FROM faq_entries ORDER BY created_at DESC'
-        );
+        // COALESCE: if doc_name is null but doc_id is set, fall back to the document's original_name
+        // so entries always appear under the correct folder in FAQ Browser.
+        const [rows] = await pool.query(`
+            SELECT fe.id, fe.question, fe.answer, fe.section, fe.doc_id,
+                   COALESCE(fe.doc_name, gd.original_name) AS doc_name,
+                   fe.created_at, fe.updated_at
+            FROM faq_entries fe
+            LEFT JOIN general_documents gd ON fe.doc_id = gd.id
+            ORDER BY fe.created_at DESC
+        `);
         return NextResponse.json({
             success: true,
             total: rows.length,
