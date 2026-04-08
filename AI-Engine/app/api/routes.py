@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as DBSession
 
 from app.db.database import get_db
-from app.db.models import TrainingData, FAQEntry
+from app.db.models import TrainingData, FAQEntry, FlaggedQuery
 from app.schemas.chat import (
     ChatRequest, ChatResponse,
     TrainRequest, TrainResponse,
@@ -21,6 +21,7 @@ from app.schemas.chat import (
     TopicSelectRequest, TopicSelectResponse,
     FAQCreateRequest, FAQUpdateRequest, FAQListResponse, FAQDeleteResponse,
     FAQSuggestRequest,
+    FlaggedQueryResolveRequest, FlaggedQueryResponse,
 )
 from app.services import rag_service
 from app.services.conversation import process_message, stream_message, classifier
@@ -293,8 +294,7 @@ async def rag_ingest(request: Request, payload: RagIngestRequest):
     Ingest a document's extracted text into the live RAG index.
 
     Called by the Admin Dashboard immediately after a successful upload.
-    The text is chunked, embedded, and appended to the in-memory index.
-    The updated index is also persisted to disk (rag_cache.pkl).
+    The text is chunked, embedded, and stored in ChromaDB.
     """
     try:
         chunks_added = rag_service.add_document_to_index(
@@ -660,3 +660,124 @@ async def faq_delete(request: Request, faq_id: int, db: DBSession = Depends(get_
     rag_service.remove_faq_from_cache(faq_id)
 
     return FAQDeleteResponse(success=True, message=f"FAQ entry {faq_id} deleted.")
+
+
+# ── Flagged Queries (Safety Net) ──────────────────────────────────────────────
+
+@router.get("/flagged-queries", response_model=dict)
+@limiter.limit("30/minute")
+async def flagged_queries_list(
+    request: Request,
+    status: str = "pending",
+    db: DBSession = Depends(get_db),
+):
+    """
+    List flagged queries — questions the bot couldn't confidently answer.
+
+    Status options: pending | resolved | dismissed
+    """
+    valid = {"pending", "resolved", "dismissed"}
+    if status not in valid:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Use: {', '.join(valid)}")
+
+    entries = (
+        db.query(FlaggedQuery)
+        .filter(FlaggedQuery.status == status)
+        .order_by(FlaggedQuery.asked_at.desc())
+        .all()
+    )
+
+    return {
+        "success": True,
+        "total": len(entries),
+        "entries": [
+            {
+                "id": e.id,
+                "question": e.question,
+                "session_id": e.session_id,
+                "confidence": round(e.confidence, 4),
+                "topic": e.topic,
+                "asked_at": e.asked_at.isoformat(),
+                "status": e.status,
+                "admin_answer": e.admin_answer,
+                "resolved_at": e.resolved_at.isoformat() if e.resolved_at else None,
+            }
+            for e in entries
+        ],
+    }
+
+
+@router.get("/flagged-queries/count", response_model=dict)
+@limiter.limit("60/minute")
+async def flagged_queries_count(request: Request, db: DBSession = Depends(get_db)):
+    """Return the count of pending flagged queries (used for sidebar badge)."""
+    count = db.query(FlaggedQuery).filter(FlaggedQuery.status == "pending").count()
+    return {"success": True, "pending": count}
+
+
+@router.patch("/flagged-queries/{query_id}/resolve", response_model=dict)
+@limiter.limit("20/minute")
+async def flagged_query_resolve(
+    request: Request,
+    query_id: int,
+    payload: FlaggedQueryResolveRequest,
+    db: DBSession = Depends(get_db),
+):
+    """
+    Admin resolves a flagged query by providing an answer.
+
+    The question + answer are automatically saved as a new FAQ entry and
+    hot-loaded into the bot's memory so it can answer correctly from now on.
+    """
+    from datetime import datetime, timezone
+
+    entry = db.query(FlaggedQuery).filter(FlaggedQuery.id == query_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Flagged query {query_id} not found.")
+    if entry.status != "pending":
+        raise HTTPException(status_code=400, detail=f"Query is already {entry.status}.")
+
+    # Save to FAQ entries so the bot learns this answer
+    faq = FAQEntry(
+        question=entry.question,
+        answer=payload.answer,
+        section=payload.section,
+    )
+    db.add(faq)
+    db.flush()  # Get the new FAQ id before commit
+
+    # Mark flagged query as resolved
+    entry.status = "resolved"
+    entry.admin_answer = payload.answer
+    entry.resolved_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(faq)
+
+    # Hot-load into in-memory FAQ cache immediately
+    rag_service.add_faq_to_cache(faq.id, faq.question, faq.answer)
+
+    return {
+        "success": True,
+        "message": "Query resolved and answer added to bot FAQ memory.",
+        "faq_id": faq.id,
+        "question": entry.question,
+        "answer": payload.answer,
+    }
+
+
+@router.delete("/flagged-queries/{query_id}", response_model=dict)
+@limiter.limit("20/minute")
+async def flagged_query_dismiss(
+    request: Request,
+    query_id: int,
+    db: DBSession = Depends(get_db),
+):
+    """Dismiss a flagged query (mark as dismissed — no answer needed)."""
+    entry = db.query(FlaggedQuery).filter(FlaggedQuery.id == query_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Flagged query {query_id} not found.")
+
+    entry.status = "dismissed"
+    db.commit()
+
+    return {"success": True, "message": f"Flagged query {query_id} dismissed."}

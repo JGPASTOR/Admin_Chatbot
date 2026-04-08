@@ -6,6 +6,7 @@
 #    admin       :3005  — Next.js admin panel
 #    ai_engine   :8000  — FastAPI chatbot engine
 #    llm         :8001  — Shared LLM gateway → Ollama (external LAN)
+#    chromadb    :8100  — ChromaDB vector database for RAG
 #    db          :3308  — MySQL 8
 #
 #  Services already running on UBUNTU SERVER 192.168.160.118 (not containerised):
@@ -67,19 +68,45 @@ services:
       - RAG_DOCUMENT_API_URL=http://admin:3005/api/general-documents
       - CONFIDENCE_THRESHOLD=0.4
       - RAG_TOP_K=3
+      # ChromaDB vector database connection
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8100
     volumes:
-      # Persist trained ML models and RAG index between restarts
+      # Persist trained ML models between restarts
       - ai_ml_models:/app/ml_models
-      - ai_rag_store:/app/rag_store
       - ai_ml_data:/app/ml_data
     depends_on:
       db:
         condition: service_healthy
       llm:
         condition: service_started
+      chromadb:
+        condition: service_started
     networks:
       - dts_net
 
+  # ── Pipeline Automator (LangChain File Ingestion) ────────────────
+  automator:
+    build:
+      context: ./AI-Engine
+      dockerfile: Dockerfile
+    container_name: dts_automator
+    restart: unless-stopped
+    command: ["python", "scripts/automator.py"]
+    environment:
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8100
+      - UPLOAD_DIR=/app/uploads
+      - OMP_NUM_THREADS=1 # Good for background huggingface embedding
+    volumes:
+      # We map a local folder to /app/uploads so that when you drag files
+      # into the host folder, the container automatically processes them.
+      - ./uploads:/app/uploads
+    depends_on:
+      chromadb:
+        condition: service_started
+    networks:
+      - dts_net
   # ── LLM Gateway (FastAPI → Ollama) ───────────────────────────────
   llm:
     build:
@@ -103,6 +130,21 @@ services:
     extra_hosts:
       # Allow containers to reach the Ubuntu LAN server directly
       - "local-server:192.168.160.118"
+    networks:
+      - dts_net
+
+  # ── ChromaDB Vector Database ─────────────────────────────────────
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: dts_chromadb
+    restart: unless-stopped
+    ports:
+      - "8100:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
     networks:
       - dts_net
 
@@ -136,8 +178,8 @@ services:
 volumes:
   db_data:
   ai_ml_models:
-  ai_rag_store:
   ai_ml_data:
+  chroma_data:
 
 # ── Internal Network ───────────────────────────────────────────────
 networks:

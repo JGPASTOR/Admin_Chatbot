@@ -18,7 +18,7 @@ COPY . .
 
 # Create directories that are bind-mounted as volumes
 # (volumes will override these on container start, but they must exist for the image)
-RUN mkdir -p ml_models ml_data rag_store
+RUN mkdir -p ml_models ml_data
 
 EXPOSE 8000
 

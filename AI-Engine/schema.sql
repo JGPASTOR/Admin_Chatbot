@@ -37,3 +37,18 @@ CREATE TABLE IF NOT EXISTS training_data (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_intent (intent)
 ) ENGINE=InnoDB;
+
+-- Flagged queries — questions the bot couldn't confidently answer
+-- Admin reviews these and provides answers to feed back into the FAQ system
+CREATE TABLE IF NOT EXISTS flagged_queries (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    question TEXT NOT NULL,
+    session_id VARCHAR(36) DEFAULT NULL,
+    confidence FLOAT DEFAULT 0,
+    topic VARCHAR(20) DEFAULT NULL,
+    asked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status ENUM('pending', 'resolved', 'dismissed') DEFAULT 'pending',
+    admin_answer TEXT DEFAULT NULL,
+    resolved_at DATETIME DEFAULT NULL,
+    INDEX idx_status (status)
+) ENGINE=InnoDB;

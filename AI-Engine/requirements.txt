@@ -19,3 +19,12 @@ edge-tts
 python-docx
 sentence-transformers
 numpy
+chromadb
+
+# Ingestion Pipeline Tools
+langchain
+langchain-community
+langchain-huggingface
+watchdog
+unstructured
+pypdf

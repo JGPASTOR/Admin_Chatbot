@@ -60,6 +60,24 @@ class TrainingData(Base):
         return f"<TrainingData(id={self.id}, intent={self.intent})>"
 
 
+class FlaggedQuery(Base):
+    """Questions the bot couldn't confidently answer — queued for admin review."""
+    __tablename__ = "flagged_queries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    question = Column(Text, nullable=False)
+    session_id = Column(String(36), nullable=True)
+    confidence = Column(Float, default=0.0, nullable=False)
+    topic = Column(String(20), nullable=True)
+    asked_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    status = Column(String(10), default="pending", nullable=False)  # pending | resolved | dismissed
+    admin_answer = Column(Text, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return f"<FlaggedQuery(id={self.id}, status={self.status})>"
+
+
 class FAQEntry(Base):
     """Curated Q&A pairs. Checked before RAG — guarantees exact, correct answers."""
     __tablename__ = "faq_entries"

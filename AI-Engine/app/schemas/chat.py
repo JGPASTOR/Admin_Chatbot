@@ -166,3 +166,22 @@ class FAQDeleteResponse(BaseModel):
     """Response body for DELETE /api/faq/{id}."""
     success: bool
     message: str
+
+
+class FlaggedQueryResolveRequest(BaseModel):
+    """Request body for PATCH /api/flagged-queries/{id}/resolve."""
+    answer: str = Field(..., min_length=5, description="The admin's answer to the flagged question")
+    section: Optional[str] = Field(None, description="Optional FAQ section label")
+
+
+class FlaggedQueryResponse(BaseModel):
+    """Single flagged query entry."""
+    id: int
+    question: str
+    session_id: Optional[str]
+    confidence: float
+    topic: Optional[str]
+    asked_at: str
+    status: str
+    admin_answer: Optional[str]
+    resolved_at: Optional[str]

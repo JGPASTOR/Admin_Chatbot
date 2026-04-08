@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     RAG_STORE_DIR: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), "rag_store")
     RAG_TOP_K: int = 3
 
+    # ChromaDB — vector database for RAG embeddings
+    CHROMA_HOST: str = "localhost"
+    CHROMA_PORT: int = 8100
+
     @property
     def cors_origins_list(self) -> List[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]

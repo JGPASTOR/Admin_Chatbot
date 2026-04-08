@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from sqlalchemy.orm import Session as DBSession
 
-from app.db.models import Session, ChatLog
+from app.db.models import Session, ChatLog, FlaggedQuery
 from app.ml.intent_classifier import IntentClassifier
 from app.ml.entity_extractor import extract_entities
 from app.services.dts_client import get_document
@@ -50,6 +50,23 @@ def get_or_create_session(db: DBSession, session_id: Optional[str] = None) -> Se
     db.commit()
     db.refresh(new_session)
     return new_session
+
+
+def flag_unknown_query(db: DBSession, question: str, session_id: str, confidence: float, topic: Optional[str]):
+    """Save a low-confidence/unknown query to the flagged_queries table for admin review."""
+    try:
+        entry = FlaggedQuery(
+            question=question,
+            session_id=session_id,
+            confidence=confidence,
+            topic=topic,
+            status="pending",
+        )
+        db.add(entry)
+        db.commit()
+    except Exception as e:
+        print(f"[FlaggedQuery] Failed to log unknown query: {e}")
+        db.rollback()
 
 
 def update_session_context(db: DBSession, session: Session, key: str, value: Any):
@@ -241,6 +258,10 @@ async def process_message(
     log_message(db, p.session.id, "user", message, p.intent, p.confidence, p.entities)
     log_message(db, p.session.id, "bot", reply)
 
+    # Safety Net: flag unknown/low-confidence queries for admin review
+    if p.intent == "unknown" and not p.faq_answer and not p.document:
+        flag_unknown_query(db, message, p.session.id, p.confidence, topic)
+
     return {
         "reply": reply,
         "session_id": p.session.id,
@@ -367,3 +388,7 @@ async def stream_message(
     # Log the complete interaction
     log_message(db, p.session.id, "user", message, p.intent, p.confidence, p.entities)
     log_message(db, p.session.id, "bot", full_reply)
+
+    # Safety Net: flag unknown/low-confidence queries for admin review
+    if p.intent == "unknown" and not p.faq_answer and not p.document:
+        flag_unknown_query(db, message, p.session.id, p.confidence, topic)

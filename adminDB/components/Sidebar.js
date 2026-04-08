@@ -1,6 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useState, useEffect } from 'react';
 
 const navItems = [
     {
@@ -57,10 +58,37 @@ const navItems = [
             </svg>
         ),
     },
+    {
+        href: '/needs-review',
+        label: 'NEEDS REVIEW',
+        badge: true,
+        icon: (
+            <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+        ),
+    },
 ];
 
 export default function Sidebar() {
     const pathname = usePathname();
+    const [pendingCount, setPendingCount] = useState(0);
+
+    useEffect(() => {
+        const fetchCount = async () => {
+            try {
+                const res = await fetch('/api/flagged-queries/count');
+                const data = await res.json();
+                if (data.success) setPendingCount(data.pending || 0);
+            } catch { /* non-fatal */ }
+        };
+        fetchCount();
+        // Refresh every 60 seconds
+        const interval = setInterval(fetchCount, 60000);
+        return () => clearInterval(interval);
+    }, []);
 
     return (
         <aside style={{
@@ -106,6 +134,7 @@ export default function Sidebar() {
                     const paths = item.matchPaths || [item.href];
                     active = paths.some(p => pathname === p || pathname.startsWith(p + '/'));
                     
+                    const badgeCount = item.badge ? pendingCount : 0;
                     return (
                         <Link key={item.href} href={item.href} style={{
                             position: 'relative',
@@ -125,7 +154,21 @@ export default function Sidebar() {
                                 }} />
                             )}
                             <span style={{ opacity: active ? 1 : 0.7, paddingLeft: 2 }}>{item.icon}</span>
-                            {item.label}
+                            <span style={{ flex: 1 }}>{item.label}</span>
+                            {badgeCount > 0 && (
+                                <span style={{
+                                    background: '#ef4444',
+                                    color: '#fff',
+                                    borderRadius: 10,
+                                    fontSize: 10,
+                                    fontWeight: 700,
+                                    padding: '1px 6px',
+                                    minWidth: 18,
+                                    textAlign: 'center',
+                                }}>
+                                    {badgeCount > 99 ? '99+' : badgeCount}
+                                </span>
+                            )}
                         </Link>
                     );
                 })}
