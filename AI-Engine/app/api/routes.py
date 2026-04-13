@@ -597,11 +597,17 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
     # 12 chunks × ~20s = ~4 min total, well within the caller's timeout.
     gen_system = (
         "You are a training data generator for a Philippine local government chatbot (Surigao City DTS). "
-        "Read the excerpt and produce ONE canonical answer plus question variations citizens might use.\n\n"
+        "Read the excerpt and produce SHORT, NATURAL questions that a citizen would actually type on their phone.\n\n"
+        "QUESTION RULES — CRITICAL:\n"
+        "  • Questions MUST be SHORT (5-12 words max). Example: 'What is National Priority 8?' not a full paragraph.\n"
+        "  • Questions must sound like something a real person would type, NOT a copy of the answer text.\n"
+        "  • NEVER copy content from the answer into the question. The question is what the citizen ASKS, the answer is what the bot SAYS.\n"
+        "  • Bad question: 'What is NP8 (Market competition reforms, MSME development) aligns with City Sectoral Goals Tourism Trade?'\n"
+        "  • Good question: 'What is National Priority 8?' or 'What does NP8 cover?'\n\n"
         "Output per excerpt:\n"
-        "  • 1 primary question  — the most direct question a citizen would ask\n"
-        "  • 2 variation questions — different ways to ask the same thing (rephrase only)\n"
-        "All 3 questions share the SAME answer.\n\n"
+        "  • 1 primary question  — the most natural short question a citizen would type\n"
+        "  • 2 variation questions — different short phrasings of the same question\n"
+        "All 3 questions share the SAME answer (which is the full detailed text from the excerpt).\n\n"
         "CONFIDENCE SCALE (3 levels only):\n"
         "  10  — answer is a VERBATIM QUOTE or exact numbered fact from the text\n"
         "  8-9 — answer is clearly and fully stated in the text  ← USE THIS FOR ALMOST ALL REAL CONTENT\n"
@@ -620,8 +626,10 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
             f"Document: {filename}\n\n"
             f"Excerpt {idx + 1}:\n{chunk}\n\n"
             f"Generate 3 entries (1 primary + 2 variations) sharing ONE answer derived from the excerpt above.\n"
+            f"REMINDER: Questions must be SHORT (5-12 words) and natural — like 'What is National Priority 8?' not a long paragraph.\n"
+            f"The answer field should contain the full detailed information from the excerpt.\n"
             f"The excerpt contains real text → confidence MUST be 8 or 9 (NOT 5, NOT 6, NOT 7 unless synthesizing sentences).\n"
-            f"section = section label found in the excerpt (e.g. 'Section 2', 'Eligibility').\n"
+            f"section = section label found in the excerpt (e.g. 'Section 2', 'National Priority 8').\n"
             f"Return ONLY the JSON array. If no factual content, return []."
         )
         try:

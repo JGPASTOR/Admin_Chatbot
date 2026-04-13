@@ -381,7 +381,9 @@ export async function POST(request) {
             })(); // fire and forget — no await
         }
 
-        // ── Forward extracted text to AI Engine RAG pipeline (non-blocking) ──
+        // ── Forward extracted text to AI Engine RAG pipeline (true fire-and-forget) ──
+        // Do NOT await — large documents take 30-120s to embed and chunk.
+        // The upload returns immediately; RAG indexes in the background.
         const rawText = extractedData.text
             ? cleanDocText(extractedData.text)
             : (extractedData.sheets ? JSON.stringify(extractedData.sheets) : '');
@@ -389,29 +391,15 @@ export async function POST(request) {
         let ragWarning = null;
         if (rawText) {
             const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
-            try {
-                // Call ingest async (don't await deeply if we don't need to block UI)
-                // We'll await it with a timeout to catch obvious errors, but we don't fail upload if AI fails
-                const ragRes = await fetch(`${aiEngineUrl}/api/rag/ingest`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ filename: originalName, text: rawText }),
-                    signal: AbortSignal.timeout(15_000), // Reduce from 60s to 15s to avoid freezing UI
-                });
-
-                if (!ragRes.ok) {
-                    const errBody = await ragRes.text();
-                    ragWarning = `AI Engine returned ${ragRes.status}: ${errBody}`;
-                    console.warn('[RAG Ingest] Warning:', ragWarning);
-                } else {
-                    const ragData = await ragRes.json();
-                    console.log(`[RAG Ingest] OK — ${ragData.chunks_added ?? 'N/A'} chunks added for '${originalName}'.`);
-                }
-            } catch (ragErr) {
-                // Ignore timeout or connection refused errors quietly so it doesn't break upload
-                ragWarning = `Could not reach AI Engine: ${ragErr.message}`;
-                console.warn('[RAG Ingest] Warning:', ragWarning);
-            }
+            // Fire and forget — no await, no timeout kills the ingest
+            fetch(`${aiEngineUrl}/api/rag/ingest`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: originalName, text: rawText }),
+            }).then(r => {
+                if (r.ok) r.json().then(d => console.log(`[RAG Ingest] OK — ${d.chunks_added ?? 'N/A'} chunks for '${originalName}'`));
+                else console.warn(`[RAG Ingest] AI Engine returned ${r.status} for '${originalName}'`);
+            }).catch(e => console.warn(`[RAG Ingest] Could not reach AI Engine: ${e.message}`));
         }
 
         return NextResponse.json({

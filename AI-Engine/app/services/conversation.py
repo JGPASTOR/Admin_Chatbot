@@ -184,6 +184,31 @@ async def _run_pipeline(
         if faq_answer:
             rag_context = None
 
+    # Keyword fallback: semantic FAQ failed + RAG found nothing
+    # Search faq_entries in MySQL by keywords so short queries like
+    # "what is national priority 8?" still find answers from long stored questions.
+    if not faq_answer and not rag_context and topic != "docs":
+        from app.db.models import FAQEntry
+        import re as _re
+        _stop = {"what","is","the","a","an","of","in","for","and","or","are","how","why","who","when","where"}
+        _words = [w for w in _re.findall(r'\b[a-zA-Z0-9]+\b', message.lower()) if w not in _stop and len(w) >= 2]
+        if _words:
+            # Build a LIKE filter requiring ALL keywords to be present
+            from sqlalchemy import and_
+            conditions = [FAQEntry.question.ilike(f"%{w}%") for w in _words]
+            kw_match = db.query(FAQEntry).filter(and_(*conditions)).first()
+            if not kw_match and len(_words) > 2:
+                # Relax: require any 2-word combination (for partial matches)
+                from sqlalchemy import or_
+                pairs = []
+                for i in range(len(_words) - 1):
+                    pairs.append(and_(FAQEntry.question.ilike(f"%{_words[i]}%"),
+                                      FAQEntry.question.ilike(f"%{_words[i+1]}%")))
+                if pairs:
+                    kw_match = db.query(FAQEntry).filter(or_(*pairs)).first()
+            if kw_match:
+                faq_answer = kw_match.answer
+
     # If RAG found results, clear pending tracking state so follow-up messages
     # (like "HOW ABOUT [name]?") also search RAG instead of being treated as PDID replies.
     if rag_context:
