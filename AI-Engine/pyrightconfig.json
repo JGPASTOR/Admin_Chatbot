@@ -1,6 +1,10 @@
 {
   "pythonVersion": "3.9",
-  "venvPath": ".",
+  "venvPath": "/Users/imziiy/Desktop/2026/Admin_Chatbot/AI-Engine",
   "venv": ".venv",
-  "typeCheckingMode": "off"
+  "extraPaths": [
+    "/Users/imziiy/Desktop/2026/Admin_Chatbot/AI-Engine/.venv/lib/python3.9/site-packages"
+  ],
+  "typeCheckingMode": "off",
+  "reportMissingModuleSource": "none"
 }

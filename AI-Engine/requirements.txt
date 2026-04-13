@@ -20,6 +20,8 @@ python-docx
 sentence-transformers
 numpy
 chromadb
+# Async Redis — shared cache for LLM + RAG query results
+redis[asyncio]>=5.0.0
 
 # Ingestion Pipeline Tools
 langchain

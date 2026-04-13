@@ -36,6 +36,20 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass  # Column already exists — normal on every subsequent startup
 
+    # Migrate: add Phase-1 observability columns to chat_logs (safe no-op on re-runs)
+    try:
+        from sqlalchemy import text as _sql_text
+        with engine.connect() as _conn:
+            _conn.execute(_sql_text(
+                "ALTER TABLE chat_logs "
+                "ADD COLUMN response_source ENUM('faq_cache','rag_template','llm') DEFAULT NULL AFTER intent, "
+                "ADD COLUMN response_ms INT DEFAULT NULL AFTER response_source"
+            ))
+            _conn.commit()
+        print("✅ Migrated: added response_source & response_ms columns to chat_logs")
+    except Exception:
+        pass  # Columns already exist
+
     print("✅ Database tables ready")
 
     # Load ML model
@@ -79,11 +93,20 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"⚠️  Could not load FAQ entries: {e}")
 
+    # Connect Redis cache for RAG query results
+    if settings.USE_RAG and settings.RAG_CACHE_ENABLED:
+        try:
+            await rag_service.connect_redis(settings.REDIS_URL)
+            print(f"✅ RAG Redis cache connected ({settings.REDIS_URL})")
+        except Exception as e:
+            print(f"⚠️  RAG Redis cache unavailable: {e}")
+
     yield
 
     # --- Shutdown ---
     print("👋 Shutting down DTS AI Engine...")
     await close_stream_client()
+    await rag_service.disconnect_redis()
 
 
 app = FastAPI(

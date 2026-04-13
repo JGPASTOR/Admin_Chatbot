@@ -11,6 +11,7 @@ Handles:
 """
 
 import json
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -172,19 +173,16 @@ async def _run_pipeline(
     if "pdid" in entities:
         document = await get_document(entities["pdid"])
 
-    # 5b. FAQ lookup — check curated answers before hitting raw RAG chunks
+    # 5b. Parallel FAQ + RAG retrieval (asyncio.gather fires both simultaneously)
     faq_answer = None
-    if settings.USE_RAG and rag_service.is_ready() and topic != "docs" and not document:
-        faq_answer = rag_service.faq_lookup(message)
-
-    # 5c. RAG retrieval — fetch relevant document context (skipped when FAQ matched)
     rag_context = None
-    if not faq_answer and settings.USE_RAG and rag_service.is_ready() and topic != "docs":
-        if not document and intent in ("lgu_query", "tourism_query", "unknown", "document_status", "follow_up", "help", "complaint"):
-            rag_context = rag_service.retrieve_context(
-                query=message,
-                top_k=settings.RAG_TOP_K,
-            )
+    if settings.USE_RAG and rag_service.is_ready() and topic != "docs" and not document:
+        faq_answer, rag_context = await rag_service.retrieve_parallel(
+            message, top_k=settings.RAG_TOP_K
+        )
+        # If FAQ already matched, we don't need the RAG context
+        if faq_answer:
+            rag_context = None
 
     # If RAG found results, clear pending tracking state so follow-up messages
     # (like "HOW ABOUT [name]?") also search RAG instead of being treated as PDID replies.
@@ -234,12 +232,15 @@ async def process_message(
     Returns:
         Dict with reply, session_id, intent, confidence, entities
     """
+    t0 = time.monotonic()
     p = await _run_pipeline(db, message, session_id, topic)
 
     # ── FAQ short-circuit: curated answer available → return it directly ──
     if p.faq_answer:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
         log_message(db, p.session.id, "user", message, p.intent, p.confidence, p.entities)
-        log_message(db, p.session.id, "bot", p.faq_answer)
+        log_message(db, p.session.id, "bot", p.faq_answer,
+                    response_source="faq_cache", response_ms=elapsed_ms)
         return {
             "reply": p.faq_answer,
             "session_id": p.session.id,
@@ -251,8 +252,10 @@ async def process_message(
     # ── Hard guard: PDID provided but not found in DTS → skip LLM entirely ──
     if "pdid" in p.entities and not p.document:
         reply = generate_response(p.intent, p.entities, p.document, p.context, topic=topic, language=language, rag_context=p.rag_context)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
         log_message(db, p.session.id, "user", message, p.intent, p.confidence, p.entities)
-        log_message(db, p.session.id, "bot", reply)
+        log_message(db, p.session.id, "bot", reply,
+                    response_source="rag_template", response_ms=elapsed_ms)
         return {
             "reply": reply,
             "session_id": p.session.id,
@@ -263,6 +266,7 @@ async def process_message(
 
     # Generate response — try LLM first, fall back to templates
     reply = None
+    used_llm = False
     if settings.USE_LLM:
         try:
             reply = await generate_llm_response(
@@ -270,15 +274,21 @@ async def process_message(
                 rag_context=p.rag_context, user_message=message,
                 language=language,
             )
+            if reply:
+                used_llm = True
         except Exception as e:
             print(f"LLM generation failed, falling back to template: {e}")
 
     if not reply:
         reply = generate_response(p.intent, p.entities, p.document, p.context, topic=topic, language=language, rag_context=p.rag_context)
 
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    src = "llm" if used_llm else ("rag_template" if p.rag_context else "rag_template")
+
     # Log messages
     log_message(db, p.session.id, "user", message, p.intent, p.confidence, p.entities)
-    log_message(db, p.session.id, "bot", reply)
+    log_message(db, p.session.id, "bot", reply,
+                response_source=src, response_ms=elapsed_ms)
 
     # Safety Net: flag problematic queries for admin review
     if not p.faq_answer and not p.document:
@@ -308,6 +318,7 @@ async def stream_message(
     """
     Process a user message and yield Server-Sent Events (SSE).
     """
+    t0 = time.monotonic()
     p = await _run_pipeline(db, message, session_id, topic)
 
     # First yield the metadata (intent, entities, session_id)
@@ -321,8 +332,10 @@ async def stream_message(
 
     # ── FAQ short-circuit: curated answer → stream it directly ──
     if p.faq_answer:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
         log_message(db, p.session.id, "user", message, p.intent, p.confidence, p.entities)
-        log_message(db, p.session.id, "bot", p.faq_answer)
+        log_message(db, p.session.id, "bot", p.faq_answer,
+                    response_source="faq_cache", response_ms=elapsed_ms)
         yield f"data: {json.dumps({'text': p.faq_answer})}\n\n"
         done_meta = json.dumps({
             "session_id": p.session.id,
@@ -337,8 +350,10 @@ async def stream_message(
     # ── Hard guard: PDID provided but not found in DTS → skip LLM entirely ──
     if "pdid" in p.entities and not p.document:
         reply = generate_response(p.intent, p.entities, p.document, p.context, topic=topic, language=language, rag_context=p.rag_context)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
         log_message(db, p.session.id, "user", message, p.intent, p.confidence, p.entities)
-        log_message(db, p.session.id, "bot", reply)
+        log_message(db, p.session.id, "bot", reply,
+                    response_source="rag_template", response_ms=elapsed_ms)
         yield f"data: {json.dumps({'text': reply})}\n\n"
         done_meta = json.dumps({
             "session_id": p.session.id,
@@ -351,47 +366,52 @@ async def stream_message(
         return
 
     full_reply = ""
-    
+    used_llm = False
+
     # Check if we can stream from LLM
     if settings.USE_LLM:
         from app.services.llm_client import generate_llm_response_stream
-        
+
         response_stream = await generate_llm_response_stream(
             p.intent, p.entities, p.document, p.context,
             rag_context=p.rag_context, user_message=message,
             language=language,
         )
-        
+
         if response_stream:
             try:
                 async for line in response_stream.aiter_lines():
                     line = line.strip()
                     if not line or not line.startswith("data: "):
                         continue
-                    
+
                     try:
                         json_str = line[6:]
                         chunk_data = json.loads(json_str)
-                        
+
                         if "error" in chunk_data:
                             print(f"LLM Stream Error: {chunk_data['error']}")
                             break
-                            
+
                         if chunk_data.get("done"):
                             break
-                            
+
                         text_chunk = chunk_data.get("token", "")
                         if text_chunk:
                             full_reply += text_chunk
                             yield f"data: {json.dumps({'text': text_chunk})}\n\n"
                     except json.JSONDecodeError:
                         continue
+
+                if full_reply:
+                    used_llm = True
             except Exception as e:
                 print(f"Error streaming LLM response: {e}")
             finally:
                 await response_stream.aclose()
-                
+
     # If no LLM streaming occurred/succeeded, fallback to template
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
     if not full_reply:
         full_reply = generate_response(p.intent, p.entities, p.document, p.context, topic=topic, language=language, rag_context=p.rag_context)
         done_meta = json.dumps({
@@ -411,10 +431,13 @@ async def stream_message(
             "language": language,
         })
         yield f"data: [DONE]{done_meta}\n\n"
-    
+
+    src = "llm" if used_llm else ("rag_template" if p.rag_context else "rag_template")
+
     # Log the complete interaction
     log_message(db, p.session.id, "user", message, p.intent, p.confidence, p.entities)
-    log_message(db, p.session.id, "bot", full_reply)
+    log_message(db, p.session.id, "bot", full_reply,
+                response_source=src, response_ms=elapsed_ms)
 
     # Safety Net: flag problematic queries for admin review
     if not p.faq_answer and not p.document:

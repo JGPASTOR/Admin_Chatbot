@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     CHROMA_HOST: str = "localhost"
     CHROMA_PORT: int = 8100
 
+    # Redis — shared cache for LLM responses and RAG query results
+    REDIS_URL: str = "redis://localhost:6379/0"
+    RAG_CACHE_ENABLED: bool = True   # set False to disable rag:query:* caching
+
+    # Phase 3 — Embedding Microservice
+    # When set, rag_service._embed() will POST to this URL instead of running
+    # the SentenceTransformer model locally.  Leave empty to use local model.
+    EMBEDDING_SERVICE_URL: str = ""   # e.g. "http://embedding_service:8002"
+
     @property
     def cors_origins_list(self) -> List[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]

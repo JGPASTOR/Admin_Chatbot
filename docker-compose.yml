@@ -3,11 +3,12 @@
 #  DTS Chatbot — Docker Compose
 #
 #  Services managed by Docker:
-#    admin       :3005  — Next.js admin panel
-#    ai_engine   :8000  — FastAPI chatbot engine
-#    llm         :8001  — Shared LLM gateway → Ollama (external LAN)
-#    chromadb    :8100  — ChromaDB vector database for RAG
-#    db          :3308  — MySQL 8
+#    admin             :3005  — Next.js admin panel
+#    embedding_service :8002  — Sentence-transformer microservice (Phase 3)
+#    ai_engine         :8000  — FastAPI chatbot engine (4 Uvicorn workers)
+#    llm               :8001  — Shared LLM gateway → Ollama (external LAN)
+#    chromadb          :8100  — ChromaDB vector database for RAG
+#    db                :3308  — MySQL 8
 #
 #  Services already running on UBUNTU SERVER 192.168.160.118 (not containerised):
 #    ✅ Nginx   — routes traffic externally (proxy_pass to ports below)
@@ -45,13 +46,41 @@ services:
     networks:
       - dts_net
 
-  # ── AI Engine (FastAPI) ───────────────────────────────────────────
+  # ── Embedding Microservice (Phase 3) ─────────────────────────────
+  # One instance loads sentence-transformers (~600 MB). All 4 AI-Engine
+  # workers call it via HTTP instead of each loading the model locally
+  # (saves ~1.8 GB RAM at scale).
+  embedding_service:
+    build:
+      context: ./embedding-service
+      dockerfile: Dockerfile
+    container_name: dts_embedding
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    environment:
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - HOST=0.0.0.0
+      - PORT=8002
+    volumes:
+      # Cache model files so rebuilds don't re-download
+      - embedding_model_cache:/root/.cache/huggingface
+    networks:
+      - dts_net
+
+  # ── AI Engine (FastAPI — 4 Uvicorn workers) ───────────────────────
+  # Phase 3: --workers 4 allows 4 concurrent requests without async
+  # context-switching (CPU-bound routes benefit most).
+  # EMBEDDING_SERVICE_URL points workers at the shared embedding service
+  # instead of loading sentence-transformers individually.
   ai_engine:
     build:
       context: ./AI-Engine
       dockerfile: Dockerfile
     container_name: dts_ai_engine
     restart: unless-stopped
+    # Phase 3: 4 Uvicorn workers instead of 1
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--log-level", "info"]
     ports:
       # Nginx on your local server should proxy_pass to this port
       - "8000:8000"
@@ -71,6 +100,13 @@ services:
       # ChromaDB vector database connection
       - CHROMA_HOST=chromadb
       - CHROMA_PORT=8100
+      # Phase 3: shared embedding microservice — workers call this instead
+      # of loading sentence-transformers locally (saves ~1.8 GB RAM)
+      - EMBEDDING_SERVICE_URL=http://embedding_service:8002
+      # Redis
+      - REDIS_URL=redis://192.168.160.118:6379/0
+      - RAG_CACHE_ENABLED=true
+      - FAQ_API_URL=http://admin:3005/api/faq
     volumes:
       # Persist trained ML models between restarts
       - ai_ml_models:/app/ml_models
@@ -81,6 +117,8 @@ services:
       llm:
         condition: service_started
       chromadb:
+        condition: service_started
+      embedding_service:
         condition: service_started
     networks:
       - dts_net
@@ -180,6 +218,7 @@ volumes:
   ai_ml_models:
   ai_ml_data:
   chroma_data:
+  embedding_model_cache:   # persists huggingface model weights between rebuilds
 
 # ── Internal Network ───────────────────────────────────────────────
 networks:

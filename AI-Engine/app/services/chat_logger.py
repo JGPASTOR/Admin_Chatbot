@@ -14,6 +14,8 @@ def log_message(
     intent: Optional[str] = None,
     confidence: Optional[float] = None,
     entities: Optional[dict] = None,
+    response_source: Optional[str] = None,
+    response_ms: Optional[int] = None,
 ) -> ChatLog:
     """
     Save a chat message to the database.
@@ -26,6 +28,8 @@ def log_message(
         intent: Classified intent (for user messages)
         confidence: Classification confidence (for user messages)
         entities: Extracted entities (for user messages)
+        response_source: Which layer produced the bot reply ('faq_cache', 'rag_template', 'llm')
+        response_ms: Wall-clock time in milliseconds to generate the bot reply
 
     Returns:
         The created ChatLog record
@@ -37,6 +41,8 @@ def log_message(
         intent=intent,
         confidence=confidence,
         entities=entities,
+        response_source=response_source,
+        response_ms=response_ms,
     )
     db.add(chat_log)
     db.commit()

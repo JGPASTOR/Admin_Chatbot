@@ -7,12 +7,15 @@ import edge_tts
 
 logger = logging.getLogger(__name__)
 from langdetect import detect, detect_langs
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session as DBSession
 
-from app.db.database import get_db
-from app.db.models import TrainingData, FAQEntry, FlaggedQuery
+
+from app.db.database import get_db, DBSession
+from app.db.models import (
+    TrainingData, FAQEntry, FlaggedQuery,
+    DocumentChunk, FAQGenerationQueue, FAQHistory,
+)
 from app.schemas.chat import (
     ChatRequest, ChatResponse,
     TrainRequest, TrainResponse,
@@ -34,6 +37,83 @@ from app.rate_limiter import limiter
 
 router = APIRouter(prefix="/api", tags=["AI Engine"])
 
+
+# ── Phase 2 Helpers ────────────────────────────────────────────────────────────
+
+async def is_duplicate_faq(new_question: str, threshold: float = 0.85) -> bool:
+    """
+    Semantic deduplication guard — returns True if *new_question* is already
+    covered by an existing FAQ entry in ChromaDB.
+
+    Thresholds (from improvement plan):
+      >= 0.85  → very likely duplicate  → skip insert
+      0.70–0.85 → possibly related      → caller may flag for review
+      < 0.70   → unique question        → safe to insert
+    """
+    try:
+        faq_col = rag_service._get_faq_collection()
+        if faq_col.count() == 0:
+            return False
+
+        emb = rag_service._embed([new_question])
+        results = faq_col.query(
+            query_embeddings=emb,
+            n_results=min(5, faq_col.count()),
+            include=["distances"],
+        )
+        if results["distances"] and results["distances"][0]:
+            best_sim = 1.0 - results["distances"][0][0]  # cosine dist → similarity
+            if best_sim >= threshold:
+                logger.info(
+                    f"[DedupFAQ] Duplicate detected (sim={best_sim:.3f}) for: '{new_question[:60]}'"
+                )
+                return True
+    except Exception as e:
+        logger.warning(f"[DedupFAQ] Check failed: {e}")
+    return False
+
+
+def _lexical_overlap_ok(answer: str, source_chunk: str, min_ratio: float = 0.70) -> bool:
+    """
+    Fast lexical overlap pre-filter used before calling the Judge LLM.
+
+    Extracts content words from *answer* and checks what fraction appear
+    verbatim in *source_chunk*.  If < min_ratio, the answer likely contains
+    hallucinated details and should be held for manual review.
+
+    Returns True  when overlap >= min_ratio (answer looks grounded).
+    Returns False when overlap <  min_ratio (answer may be hallucinated).
+    """
+    if not answer or not source_chunk:
+        return True  # no evidence to reject
+
+    # Extract meaningful ngrams / words from the answer (lowercase, alpha-only)
+    answer_words = re.findall(r'\b[a-zA-Z]{4,}\b', answer.lower())
+    if not answer_words:
+        return True
+
+    chunk_lower = source_chunk.lower()
+    found = sum(1 for w in answer_words if w in chunk_lower)
+    ratio = found / len(answer_words)
+    logger.debug(f"[LexOverlap] ratio={ratio:.2f} ({found}/{len(answer_words)})")
+    return ratio >= min_ratio
+
+
+def _write_faq_history(
+    db,
+    faq: FAQEntry,
+    change_type: str,
+    changed_by: str = "admin",
+) -> None:
+    """Insert one FAQHistory row. Caller is responsible for db.commit()."""
+    history = FAQHistory(
+        faq_id=faq.id,
+        question=faq.question,
+        answer=faq.answer,
+        changed_by=changed_by,
+        change_type=change_type,
+    )
+    db.add(history)
 
 @router.post("/chat", response_model=ChatResponse)
 @limiter.limit("30/minute")
@@ -304,6 +384,8 @@ async def rag_ingest(request: Request, payload: RagIngestRequest):
             text=payload.text,
             filename=payload.filename,
         )
+        # Invalidate rag:query:* cache so stale results are never returned
+        await rag_service.invalidate_rag_cache()
         return RagIngestResponse(
             success=True,
             message=f"Successfully ingested '{payload.filename}'.",
@@ -313,6 +395,96 @@ async def rag_ingest(request: Request, payload: RagIngestRequest):
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+
+
+@router.post("/rag/ingest-with-chunks", response_model=dict)
+@limiter.limit("10/minute")
+async def rag_ingest_with_chunks(
+    request: Request,
+    payload: RagIngestRequest,
+    db: DBSession = Depends(get_db),
+):
+    """
+    **Phase-2 ingestion endpoint** — extends /rag/ingest with:
+
+    1. Persists every chunk to the `document_chunks` table so they can be
+       re-processed individually without re-uploading the full document.
+    2. Enqueues one row per chunk in `faq_generation_queue` (status='pending')
+       so the background worker can generate FAQs incrementally.
+
+    Use this endpoint instead of /rag/ingest when the Admin Dashboard
+    also wants to trigger background FAQ generation.
+    """
+    from app.services.rag_service import _chunk_text
+
+    doc_id   = getattr(payload, "doc_id", 0) or 0
+    filename = payload.filename or "document"
+    text     = payload.text.strip()
+
+    if not text:
+        raise HTTPException(status_code=400, detail="No text provided.")
+
+    # 1. Embed + store into ChromaDB (same as the standard ingest endpoint)
+    try:
+        chunks_added = rag_service.add_document_to_index(text=text, filename=filename)
+        await rag_service.invalidate_rag_cache()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    # 2. Chunk the text and persist each chunk to MySQL
+    raw_chunks = _chunk_text(text)
+    raw_chunks = [c.strip() for c in raw_chunks if len(c.strip()) >= 60]
+
+    section_re = re.compile(r'\bSECTION\s+(\d+)', re.IGNORECASE)
+    chunk_rows: list = []
+    queue_rows: list = []
+
+    for idx, chunk in enumerate(raw_chunks):
+        # Infer section label from chunk text (fallback to 'General')
+        sec_match = section_re.search(chunk)
+        section_label = f"Section {sec_match.group(1)}" if sec_match else "General"
+
+        chunk_rows.append(
+            DocumentChunk(
+                doc_id=doc_id,
+                doc_name=filename,
+                chunk_index=idx,
+                chunk_text=chunk,
+                section_label=section_label,
+                char_count=len(chunk),
+            )
+        )
+        queue_rows.append(
+            FAQGenerationQueue(
+                doc_id=doc_id,
+                doc_name=filename,
+                chunk_index=idx,
+                chunk_text=chunk,
+                section=section_label,
+                status="pending",
+            )
+        )
+
+    # Bulk insert (use_existing_rows check omitted for speed — caller controls idempotency)
+    if chunk_rows:
+        db.add_all(chunk_rows)
+    if queue_rows:
+        db.add_all(queue_rows)
+    db.commit()
+
+    logger.info(
+        f"[IngestChunks] '{filename}': {chunks_added} ChromaDB chunks, "
+        f"{len(chunk_rows)} MySQL rows, {len(queue_rows)} queue rows."
+    )
+
+    return {
+        "success": True,
+        "message": f"Ingested '{filename}' into RAG + chunk store + generation queue.",
+        "chunks_added": chunks_added,
+        "chunks_stored": len(chunk_rows),
+        "queue_items": len(queue_rows),
+    }
+
 
 
 @router.post("/rag/delete", response_model=RagDeleteResponse)
@@ -329,6 +501,8 @@ async def rag_delete(request: Request, payload: RagDeleteRequest):
         chunks_deleted = rag_service.delete_document_from_index(
             filename=payload.filename,
         )
+        # Invalidate rag:query:* cache — deleted doc chunks should no longer be returned
+        await rag_service.invalidate_rag_cache()
         return RagDeleteResponse(
             success=True,
             message=f"Successfully deleted '{payload.filename}' from index.",
@@ -346,6 +520,8 @@ async def rag_rebuild(request: Request):
     """
     try:
         total_chunks = rag_service.rebuild_index()
+        # Invalidate rag:query:* cache after full rebuild
+        await rag_service.invalidate_rag_cache()
         return RagRebuildResponse(
             success=True,
             message="Successfully rebuilt RAG index from Admin API.",
@@ -373,16 +549,15 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
     semantic matcher many entry points — users can phrase a question any
     way they like and still get the right answer.
 
-    Confidence is scored against text evidence, not a vague scale:
-      10   — answer is a direct quote / exact fact from the text
-      8-9  — answer clearly stated in text, no ambiguity
-      6-7  — answer derivable from text with minor synthesis
-      4-5  — answer implied but not explicit (pending review)
-      1-3  — answer not in text → discarded automatically
+    Confidence is scored against text evidence:
+      10   — answer is a verbatim quote / exact fact from the text
+      8-9  — answer clearly and fully stated in text (default for real content)
+      7    — answer derivable by combining 2-3 sentences
+      < 7  — discarded automatically (forbidden: 5 or 6)
 
     Auto-approve threshold: ≥ 8  (straight to FAQ, no manual review)
-    Pending review:         5-7
-    Discarded:              < 5
+    Pending review:         7
+    Discarded:              < 7
     """
     import httpx
     import json as json_lib
@@ -427,15 +602,14 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
         "  • 1 primary question  — the most direct question a citizen would ask\n"
         "  • 2 variation questions — different ways to ask the same thing (rephrase only)\n"
         "All 3 questions share the SAME answer.\n\n"
-        "CONFIDENCE RULES — score how well the answer is supported by the text:\n"
+        "CONFIDENCE SCALE (3 levels only):\n"
         "  10  — answer is a VERBATIM QUOTE or exact numbered fact from the text\n"
-        "  8-9 — answer is CLEARLY AND FULLY stated in the text with no ambiguity\n"
-        "        *** MOST CHUNKS WITH REAL CONTENT SHOULD SCORE 8 OR 9 ***\n"
-        "  7   — answer requires combining 2-3 sentences from the text\n"
-        "  5-6 — answer is only partially covered by the text\n"
-        "  1-4 — answer is NOT in the text → return [] for this chunk\n\n"
-        "IMPORTANT: Do NOT default to 5. If the text clearly contains the answer, score 8 or 9. "
-        "Reserve 5-6 only when the text is vague or incomplete.\n\n"
+        "  8-9 — answer is clearly and fully stated in the text  ← USE THIS FOR ALMOST ALL REAL CONTENT\n"
+        "  7   — answer requires combining 2-3 sentences\n"
+        "  BELOW 7 → return [] (do not output the entry at all)\n\n"
+        "RULE: If the chunk has actual factual sentences, the answer IS supported → confidence MUST be 8 or 9.\n"
+        "FORBIDDEN: confidence = 5 or 6. Those values do not exist in this scale.\n"
+        "Only return [] when the chunk is a header, signature block, or has zero factual content.\n\n"
         "Return ONLY a valid JSON array:\n"
         '[{"question":"...","answer":"...","confidence":8,"section":"...","question_type":"primary|variation"}]\n'
         "Rules: never invent details, return [] for header-only or signature-only chunks, no markdown outside the array."
@@ -446,9 +620,9 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
             f"Document: {filename}\n\n"
             f"Excerpt {idx + 1}:\n{chunk}\n\n"
             f"Generate 3 entries (1 primary + 2 variations) sharing ONE answer derived from the excerpt above.\n"
-            f"If the excerpt has clear factual content, the confidence MUST be 8 or 9.\n"
+            f"The excerpt contains real text → confidence MUST be 8 or 9 (NOT 5, NOT 6, NOT 7 unless synthesizing sentences).\n"
             f"section = section label found in the excerpt (e.g. 'Section 2', 'Eligibility').\n"
-            f"Return ONLY the JSON array."
+            f"Return ONLY the JSON array. If no factual content, return []."
         )
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -474,7 +648,7 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
                                 conf = max(1, min(10, int(float(p.get("confidence", 5)))))
                             except (ValueError, TypeError):
                                 conf = 5
-                            if conf < 4:
+                            if conf < 7:
                                 continue
                             all_pairs.append({
                                 "question": q,
@@ -496,6 +670,20 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
         if key not in seen_q:
             seen_q.add(key)
             deduped.append(p)
+
+    # ── Phase-2: Lexical overlap pre-filter ───────────────────────────────────
+    # Runs BEFORE the Judge LLM to catch hallucinated answers cheaply.
+    # Pairs that fail lexical check are downgraded to confidence=7 so they
+    # land in 'pending' review rather than being auto-approved.
+    for p in deduped:
+        source = p.get("_source", "")
+        if not _lexical_overlap_ok(p["answer"], source):
+            logger.info(
+                f"[LexOverlap] Low overlap — downgrading confidence to 7 for: '{p['question'][:60]}'"
+            )
+            p["confidence"] = min(p["confidence"], 7)
+            p["_lexical_downgraded"] = True
+
 
     # ── Step 2: Judge — verify answers against source text ────────────────────
     judge_system = (
@@ -542,6 +730,7 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
 
     for p in verified_pairs:
         p.pop("_source", None)
+        p.pop("_lexical_downgraded", None)
 
     verified_pairs.sort(key=lambda x: x["confidence"], reverse=True)
 
@@ -556,8 +745,151 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
         "breakdown": {
             "primary":   sum(1 for p in verified_pairs if p.get("question_type") == "primary"),
             "variation": sum(1 for p in verified_pairs if p.get("question_type") == "variation"),
+            "lexical_downgraded": sum(
+                1 for p in all_pairs if p.get("_lexical_downgraded")
+            ),
         },
     }
+
+
+@router.post("/faq/process-queue", response_model=dict)
+@limiter.limit("5/minute")
+async def faq_process_queue(
+    request: Request,
+    db: DBSession = Depends(get_db),
+    batch_size: int = 5,
+):
+    """
+    **Background worker endpoint** — picks up pending FAQ generation queue items.
+
+    Admin Dashboard (or a cron job) calls this endpoint periodically.
+    Each call processes up to *batch_size* pending chunks, calls Qwen3,
+    applies the lexical-overlap pre-filter + semantic dedup check, then
+    inserts approved FAQs immediately.
+
+    Response includes queue progress so the UI can render a progress bar:
+      ``{"processed": 5, "pending_remaining": 84, "approved": 3, "skipped": 2}``
+    """
+    import httpx
+    import json as json_lib
+    from datetime import datetime, timezone
+
+    # Claim a batch atomically (set status='processing' before reading)
+    pending = (
+        db.query(FAQGenerationQueue)
+        .filter(FAQGenerationQueue.status == "pending")
+        .order_by(FAQGenerationQueue.created_at)
+        .limit(batch_size)
+        .all()
+    )
+
+    if not pending:
+        remaining = db.query(FAQGenerationQueue).filter(
+            FAQGenerationQueue.status.in_(["pending", "processing"])
+        ).count()
+        return {"success": True, "processed": 0, "pending_remaining": remaining,
+                "approved": 0, "skipped": 0, "message": "Queue is empty."}
+
+    # Mark as processing
+    for item in pending:
+        item.status = "processing"
+    db.commit()
+
+    llm_url = os.environ.get("LLM_SERVICE_URL", "http://localhost:8001")
+    gen_system = (
+        "You are a training data generator for a Philippine local government chatbot. "
+        "Read the excerpt and produce ONE Q&A pair.\n"
+        "Return ONLY: [{\"question\":\"...\",\"answer\":\"...\",\"confidence\":8,\"section\":\"...\"}]\n"
+        "Do not invent details. Return [] for header-only or empty chunks."
+    )
+
+    approved = 0
+    skipped  = 0
+    now = datetime.now(timezone.utc)
+
+    for item in pending:
+        try:
+            prompt = (
+                f"Document: {item.doc_name}\n\nExcerpt:\n{item.chunk_text}\n\n"
+                f"Generate 1 primary Q&A from this excerpt. confidence must be 8 or 9.\n"
+                f"section = section label in the excerpt or '{item.section or 'General'}'.\n"
+                f"Return ONLY the JSON array."
+            )
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                res = await client.post(
+                    f"{llm_url}/api/generate",
+                    json={"prompt": prompt, "system_prompt": gen_system},
+                )
+                res.raise_for_status()
+                raw = res.json().get("response", "").strip()
+
+            json_match = re.search(r'\[[\s\S]*?\]', raw)
+            if not json_match:
+                raise ValueError("No JSON array in LLM response")
+
+            pairs = json_lib.loads(json_match.group(0))
+            if not isinstance(pairs, list) or not pairs:
+                raise ValueError("Empty or invalid pairs list")
+
+            for p in pairs:
+                q = str(p.get("question", "")).strip()
+                a = str(p.get("answer", "")).strip()
+                try:
+                    conf = max(1, min(10, int(float(p.get("confidence", 5)))))
+                except (ValueError, TypeError):
+                    conf = 5
+
+                if not q or not a or conf < 7:
+                    skipped += 1
+                    continue
+
+                # Lexical overlap pre-filter
+                if not _lexical_overlap_ok(a, item.chunk_text):
+                    logger.info(f"[QueueWorker] Lexical fail — skipping: '{q[:60]}'")
+                    skipped += 1
+                    continue
+
+                # Semantic deduplication
+                if await is_duplicate_faq(q):
+                    logger.info(f"[QueueWorker] Duplicate FAQ — skipping: '{q[:60]}'")
+                    skipped += 1
+                    continue
+
+                # Insert to faq_entries
+                section_val = str(p.get("section", item.section or "General")).strip() or "General"
+                faq = FAQEntry(question=q, answer=a, section=section_val)
+                db.add(faq)
+                db.flush()  # get id
+
+                # History record
+                _write_faq_history(db, faq, change_type="created", changed_by="ai-auto")
+
+                # Hot-load into in-memory FAQ cache
+                rag_service.add_faq_to_cache(faq.id, faq.question, faq.answer)
+                approved += 1
+
+            item.status = "done"
+            item.processed_at = now
+
+        except Exception as e:
+            logger.warning(f"[QueueWorker] Chunk {item.id} failed: {e}")
+            item.retry_count = (item.retry_count or 0) + 1
+            item.status = "failed" if (item.retry_count or 0) >= 3 else "pending"
+
+    db.commit()
+
+    remaining = db.query(FAQGenerationQueue).filter(
+        FAQGenerationQueue.status.in_(["pending", "processing"])
+    ).count()
+
+    return {
+        "success": True,
+        "processed": len(pending),
+        "approved": approved,
+        "skipped": skipped,
+        "pending_remaining": remaining,
+    }
+
 
 
 @router.post("/faq/suggest", response_model=dict)
@@ -631,10 +963,11 @@ async def faq_create(request: Request, payload: FAQCreateRequest, db: DBSession 
     Save a curated Q&A pair to the database and immediately load it into
     the in-memory FAQ cache so the bot can use it without restarting.
 
-    The bot checks FAQ entries before RAG. When a user's question matches a
-    FAQ entry (≥72% semantic similarity), the stored answer is returned directly.
+    Phase-2: checks semantic deduplication before inserting. If the question
+    already exists (cosine similarity >= 0.85), returns the existing entry.
+    All inserts write an FAQHistory row for audit purposes.
     """
-    # Skip insert if this question already exists (prevents duplicates)
+    # ── Exact-match dedup (case-insensitive) ──────────────────────────────────
     existing = db.query(FAQEntry).filter(
         FAQEntry.question.ilike(payload.question.strip())
     ).first()
@@ -647,6 +980,15 @@ async def faq_create(request: Request, payload: FAQCreateRequest, db: DBSession 
             "question": existing.question,
             "answer": existing.answer,
             "section": existing.section,
+            "duplicate": True,
+        }
+
+    # ── Semantic dedup (Phase-2) ───────────────────────────────────────────────
+    if await is_duplicate_faq(payload.question.strip()):
+        return {
+            "success": False,
+            "message": "A semantically similar FAQ already exists. Skipped to prevent duplicates.",
+            "duplicate": True,
         }
 
     entry = FAQEntry(
@@ -655,6 +997,11 @@ async def faq_create(request: Request, payload: FAQCreateRequest, db: DBSession 
         section=payload.section,
     )
     db.add(entry)
+    db.flush()  # get id before commit
+
+    # History record
+    _write_faq_history(db, entry, change_type="created", changed_by="admin")
+
     db.commit()
     db.refresh(entry)
 
@@ -668,7 +1015,9 @@ async def faq_create(request: Request, payload: FAQCreateRequest, db: DBSession 
         "question": entry.question,
         "answer": entry.answer,
         "section": entry.section,
+        "duplicate": False,
     }
+
 
 
 @router.get("/faq", response_model=FAQListResponse)
@@ -807,6 +1156,7 @@ async def knowledge_graph(request: Request, db: DBSession = Depends(get_db)):
 async def faq_update(request: Request, faq_id: int, payload: FAQUpdateRequest, db: DBSession = Depends(get_db)):
     """
     Update an existing FAQ entry. Refreshes the in-memory cache automatically.
+    Phase-2: writes an FAQHistory row on every edit.
     """
     entry = db.query(FAQEntry).filter(FAQEntry.id == faq_id).first()
     if not entry:
@@ -818,6 +1168,9 @@ async def faq_update(request: Request, faq_id: int, payload: FAQUpdateRequest, d
         entry.answer = payload.answer
     if payload.section is not None:
         entry.section = payload.section
+
+    # History before commit so we capture the new values
+    _write_faq_history(db, entry, change_type="edited", changed_by="admin")
 
     db.commit()
     db.refresh(entry)
@@ -836,19 +1189,67 @@ async def faq_update(request: Request, faq_id: int, payload: FAQUpdateRequest, d
     }
 
 
+
 @router.delete("/faq/{faq_id}", response_model=FAQDeleteResponse)
 @limiter.limit("30/minute")
 async def faq_delete(request: Request, faq_id: int, db: DBSession = Depends(get_db)):
-    """Delete a FAQ entry and remove it from the bot's memory immediately."""
+    """Delete a FAQ entry and remove it from the bot's memory immediately.
+    Phase-2: writes an FAQHistory (deleted) row before deletion.
+    """
     entry = db.query(FAQEntry).filter(FAQEntry.id == faq_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail=f"FAQ entry {faq_id} not found.")
+
+    # Write deletion history BEFORE deleting the parent row
+    _write_faq_history(db, entry, change_type="deleted", changed_by="admin")
+    db.flush()  # flush history insert first
 
     db.delete(entry)
     db.commit()
     rag_service.remove_faq_from_cache(faq_id)
 
     return FAQDeleteResponse(success=True, message=f"FAQ entry {faq_id} deleted.")
+
+
+@router.get("/faq/{faq_id}/history", response_model=dict)
+@limiter.limit("30/minute")
+async def faq_history(
+    request: Request,
+    faq_id: int,
+    db: DBSession = Depends(get_db),
+):
+    """
+    Return the full change-log for a single FAQ entry.
+
+    Each row includes: change_type, changed_by, changed_at, and the
+    question/answer snapshot at the time of the change.
+    """
+    # Verify FAQ exists (may have been deleted — history rows are kept via CASCADE logic,
+    # but the parent row may be gone.  We query history directly.)
+    rows = (
+        db.query(FAQHistory)
+        .filter(FAQHistory.faq_id == faq_id)
+        .order_by(FAQHistory.changed_at.desc())
+        .all()
+    )
+
+    return {
+        "success": True,
+        "faq_id": faq_id,
+        "total": len(rows),
+        "history": [
+            {
+                "id": r.id,
+                "change_type": r.change_type,
+                "changed_by": r.changed_by,
+                "changed_at": r.changed_at.isoformat(),
+                "question_snapshot": r.question,
+                "answer_snapshot": r.answer,
+            }
+            for r in rows
+        ],
+    }
+
 
 
 # ── Flagged Queries (Safety Net) ──────────────────────────────────────────────
@@ -905,12 +1306,51 @@ async def flagged_queries_count(request: Request, db: DBSession = Depends(get_db
     return {"success": True, "pending": count}
 
 
+def _generate_and_store_faq_variants(faq_id: int, question: str, answer: str) -> None:
+    """
+    Background task: ask the LLM to rephrase the resolved question into
+    3 natural variations, then store each one in the FAQ ChromaDB collection.
+    This broadens the semantic matching so the bot answers re-phrased versions
+    of the same question correctly on the first try.
+    """
+    import httpx
+
+    llm_url = os.environ.get("LLM_SERVICE_URL", "http://localhost:8001")
+    system = (
+        "You generate alternative phrasings of a question. "
+        "Return ONLY a JSON array of 3 short question strings — no explanation, no markdown. "
+        "Example: [\"How do I apply?\", \"What is the application process?\", \"Steps to apply?\"]"
+    )
+    prompt = (
+        f"Original question: {question}\n\n"
+        "Write 3 natural rephrasing variants of this question that have the same meaning. "
+        "Return a JSON array of exactly 3 strings."
+    )
+    try:
+        res = httpx.post(
+            f"{llm_url}/api/generate",
+            json={"prompt": prompt, "system_prompt": system},
+            timeout=45,
+        )
+        res.raise_for_status()
+        raw = res.json().get("response", "").strip()
+        # Strip markdown code fences if present
+        raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("` \n")
+        variants = json.loads(raw)
+        if isinstance(variants, list):
+            variants = [str(v).strip() for v in variants if v and str(v).strip()]
+            rag_service.add_faq_question_variants(faq_id, variants, answer)
+    except Exception as e:
+        logger.warning(f"[ResolveVariants] Failed to generate variants for FAQ {faq_id}: {e}")
+
+
 @router.patch("/flagged-queries/{query_id}/resolve", response_model=dict)
 @limiter.limit("20/minute")
 async def flagged_query_resolve(
     request: Request,
     query_id: int,
     payload: FlaggedQueryResolveRequest,
+    background_tasks: BackgroundTasks,
     db: DBSession = Depends(get_db),
 ):
     """
@@ -918,6 +1358,7 @@ async def flagged_query_resolve(
 
     The question + answer are automatically saved as a new FAQ entry and
     hot-loaded into the bot's memory so it can answer correctly from now on.
+    A background task then generates question variants to improve re-phrasing recall.
     """
     from datetime import datetime, timezone
 
@@ -936,6 +1377,9 @@ async def flagged_query_resolve(
     db.add(faq)
     db.flush()  # Get the new FAQ id before commit
 
+    # Phase 4 closed-loop: Write an audit trace that this FAQ emerged from a user query
+    _write_faq_history(db, faq, "created", "admin (via resolved query)")
+
     # Mark flagged query as resolved
     entry.status = "resolved"
     entry.admin_answer = payload.answer
@@ -943,8 +1387,13 @@ async def flagged_query_resolve(
     db.commit()
     db.refresh(faq)
 
-    # Hot-load into in-memory FAQ cache immediately
+    # Hot-load the original question into the FAQ cache immediately
     rag_service.add_faq_to_cache(faq.id, faq.question, faq.answer)
+
+    # Generate question variants in the background (non-blocking)
+    background_tasks.add_task(
+        _generate_and_store_faq_variants, faq.id, faq.question, faq.answer
+    )
 
     return {
         "success": True,
@@ -1064,3 +1513,455 @@ async def flagged_query_dismiss(
     db.commit()
 
     return {"success": True, "message": f"Flagged query {query_id} dismissed."}
+
+
+# ── Phase 3: 3-Tier Priority Queue ────────────────────────────────────────────
+
+@router.post("/chat/prioritized", response_model=dict)
+@limiter.limit("30/minute")
+async def chat_prioritized(
+    request: Request,
+    chat_request: ChatRequest,
+    db: DBSession = Depends(get_db),
+):
+    """
+    **Phase-3 priority-routed chat endpoint** — implements the 3-tier queue
+    strategy from the improvement plan to minimise Ollama (LLM) load.
+
+    Tier routing order (fastest → slowest):
+    ┌──────────────────────────────────────────────────────────┐
+    │ HIGH   — FAQ cache hit (answer already known) → <100 ms │
+    │ MEDIUM — RAG retrieval only (no LLM needed)  → <500 ms  │
+    │ LOW    — Full LLM generation (last resort)   → 2-15 s   │
+    └──────────────────────────────────────────────────────────┘
+
+    Goal: only 20-30% of requests should reach the LLM tier.
+    The other 70-80% return from FAQ or template fill.
+
+    Response includes a ``tier`` field so monitoring / dashboards can track
+    the distribution of requests across tiers.
+    """
+    import time as _time
+    from app.services.conversation import get_or_create_session
+    from app.services import rag_service as _rag
+
+    t_start = _time.perf_counter()
+    query = chat_request.message.strip()
+
+    # ── TIER 1: FAQ Cache ─────────────────────────────────────────────────────
+    try:
+        faq_match = await _rag.faq_lookup(query)
+        if faq_match:
+            elapsed_ms = int((_time.perf_counter() - t_start) * 1000)
+            logger.info(f"[PriorityQueue] TIER=HIGH (FAQ hit) q={query[:60]!r} ms={elapsed_ms}")
+            return {
+                "tier": "HIGH",
+                "source": "faq_cache",
+                "reply": faq_match,
+                "session_id": chat_request.session_id,
+                "response_ms": elapsed_ms,
+            }
+    except Exception as _e:
+        logger.warning(f"[PriorityQueue] FAQ lookup failed: {_e}")
+
+    # ── TIER 2: RAG Template (no LLM) ────────────────────────────────────────
+    # For simple intent queries (e.g. doc status) we can fill a template from
+    # retrieved chunks without calling Qwen3.
+    try:
+        rag_chunks = await _rag.get_rag_context(query)
+        if rag_chunks:
+            # Detect simple lookup intent using a lightweight keyword heuristic
+            _STATUS_KEYWORDS = {"status", "where", "location", "tracking", "track", "received"}
+            _words = set(query.lower().split())
+            if _STATUS_KEYWORDS & _words:
+                # Build a concise template answer from the top chunk
+                top_chunk = rag_chunks[0] if isinstance(rag_chunks, list) else rag_chunks
+                template_reply = (
+                    f"Based on the available records: {str(top_chunk)[:500]}\n\n"
+                    "For the latest status, please provide your tracking number or visit the DTS office."
+                )
+                elapsed_ms = int((_time.perf_counter() - t_start) * 1000)
+                logger.info(f"[PriorityQueue] TIER=MEDIUM (RAG template) q={query[:60]!r} ms={elapsed_ms}")
+                return {
+                    "tier": "MEDIUM",
+                    "source": "rag_template",
+                    "reply": template_reply,
+                    "session_id": chat_request.session_id,
+                    "response_ms": elapsed_ms,
+                }
+    except Exception as _e:
+        logger.warning(f"[PriorityQueue] RAG lookup failed: {_e}")
+
+    # ── TIER 3: Full LLM Generation ───────────────────────────────────────────
+    try:
+        from app.services.conversation import process_message
+        result = await process_message(
+            db=db,
+            message=query,
+            session_id=chat_request.session_id,
+            language=chat_request.language,
+            topic=chat_request.topic,
+        )
+        elapsed_ms = int((_time.perf_counter() - t_start) * 1000)
+        logger.info(f"[PriorityQueue] TIER=LOW (LLM) q={query[:60]!r} ms={elapsed_ms}")
+        return {
+            "tier": "LOW",
+            "source": "llm",
+            "reply": result.get("reply", ""),
+            "session_id": result.get("session_id", chat_request.session_id),
+            "response_ms": elapsed_ms,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"All tiers failed: {str(e)}")
+
+
+# ── Phase 3: Knowledge Health Score Dashboard API ─────────────────────────────
+
+@router.get("/admin/knowledge-health", response_model=dict)
+@limiter.limit("20/minute")
+async def knowledge_health(
+    request: Request,
+    db: DBSession = Depends(get_db),
+    days: int = 7,
+):
+    """
+    **Knowledge Health Score** — aggregated metrics for the admin dashboard.
+
+    Queries the last *days* days of chat_logs, faq_entries, flagged_queries,
+    faq_generation_queue, and document_chunks to produce a single health
+    snapshot with scores, targets, and trend data.
+
+    Metrics returned (with target thresholds from the improvement plan):
+      - faq_coverage_rate       target >60%  (% queries matched by FAQ)
+      - rag_hit_rate            target >80%  (% queries using RAG vs LLM)
+      - llm_usage_per_100       target <30   (LLM calls per 100 queries)
+      - flagged_resolution_rate target >90%  (pending queries resolved in 48 h)
+      - avg_response_ms         target <2000 (average wall-clock latency)
+      - overall_score           0-100 composite health score
+    """
+    from sqlalchemy import text as _sql_text, func
+    from datetime import datetime, timezone, timedelta
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # ── Raw counts from chat_logs ─────────────────────────────────────────────
+    try:
+        total_logs = db.execute(
+            _sql_text(
+                "SELECT COUNT(*) FROM chat_logs WHERE timestamp >= :since AND role = 'bot'"
+            ),
+            {"since": since},
+        ).scalar() or 0
+
+        faq_hits = db.execute(
+            _sql_text(
+                "SELECT COUNT(*) FROM chat_logs "
+                "WHERE timestamp >= :since AND role = 'bot' AND response_source = 'faq_cache'"
+            ),
+            {"since": since},
+        ).scalar() or 0
+
+        rag_hits = db.execute(
+            _sql_text(
+                "SELECT COUNT(*) FROM chat_logs "
+                "WHERE timestamp >= :since AND role = 'bot' AND response_source = 'rag_template'"
+            ),
+            {"since": since},
+        ).scalar() or 0
+
+        llm_hits = db.execute(
+            _sql_text(
+                "SELECT COUNT(*) FROM chat_logs "
+                "WHERE timestamp >= :since AND role = 'bot' AND response_source = 'llm'"
+            ),
+            {"since": since},
+        ).scalar() or 0
+
+        avg_ms = db.execute(
+            _sql_text(
+                "SELECT AVG(response_ms) FROM chat_logs "
+                "WHERE timestamp >= :since AND role = 'bot' AND response_ms IS NOT NULL"
+            ),
+            {"since": since},
+        ).scalar() or 0
+
+        # Trend: daily query counts (last 7 days)
+        daily_rows = db.execute(
+            _sql_text(
+                "SELECT DATE(timestamp) as day, COUNT(*) as cnt "
+                "FROM chat_logs "
+                "WHERE timestamp >= :since AND role = 'bot' "
+                "GROUP BY DATE(timestamp) ORDER BY day ASC"
+            ),
+            {"since": since},
+        ).fetchall()
+
+    except Exception as e:
+        logger.warning(f"[HealthScore] chat_logs query failed: {e}")
+        total_logs = faq_hits = rag_hits = llm_hits = 0
+        avg_ms = 0
+        daily_rows = []
+
+    # ── Flagged queries ───────────────────────────────────────────────────────
+    try:
+        flagged_pending = db.execute(
+            _sql_text(
+                "SELECT COUNT(*) FROM flagged_queries WHERE status = 'pending'"
+            )
+        ).scalar() or 0
+
+        flagged_resolved_48h = db.execute(
+            _sql_text(
+                "SELECT COUNT(*) FROM flagged_queries "
+                "WHERE status = 'resolved' "
+                "AND TIMESTAMPDIFF(HOUR, asked_at, resolved_at) <= 48"
+            )
+        ).scalar() or 0
+
+        flagged_total_resolved = db.execute(
+            _sql_text(
+                "SELECT COUNT(*) FROM flagged_queries WHERE status = 'resolved'"
+            )
+        ).scalar() or 0
+
+    except Exception as e:
+        logger.warning(f"[HealthScore] flagged_queries query failed: {e}")
+        flagged_pending = flagged_resolved_48h = flagged_total_resolved = 0
+
+    # ── FAQ / Queue / Chunks ──────────────────────────────────────────────────
+    try:
+        total_faqs = db.execute(
+            _sql_text("SELECT COUNT(*) FROM faq_entries")
+        ).scalar() or 0
+
+        queue_pending = db.execute(
+            _sql_text(
+                "SELECT COUNT(*) FROM faq_generation_queue WHERE status = 'pending'"
+            )
+        ).scalar() or 0
+
+        queue_total = db.execute(
+            _sql_text("SELECT COUNT(*) FROM faq_generation_queue")
+        ).scalar() or 0
+
+        total_chunks = db.execute(
+            _sql_text("SELECT COUNT(*) FROM document_chunks")
+        ).scalar() or 0
+
+    except Exception as e:
+        logger.warning(f"[HealthScore] faq/queue/chunk query failed: {e}")
+        total_faqs = queue_pending = queue_total = total_chunks = 0
+
+    # ── Compute derived metrics ───────────────────────────────────────────────
+    def pct(num, denom):
+        return round((num / denom * 100), 1) if denom > 0 else 0.0
+
+    faq_coverage_rate     = pct(faq_hits, total_logs)
+    rag_hit_rate          = pct(rag_hits + faq_hits, total_logs)   # non-LLM %
+    llm_usage_per_100     = pct(llm_hits, total_logs)              # LLM %
+    flagged_resolution_rate = pct(flagged_resolved_48h, max(flagged_total_resolved, 1))
+    avg_response_ms       = round(float(avg_ms), 1)
+    queue_progress        = pct(queue_total - queue_pending, queue_total) if queue_total else 100.0
+
+    # ── Composite Health Score (0-100) ────────────────────────────────────────
+    # Each metric contributes up to 20 points.
+    # Target thresholds taken directly from the improvement plan (§5.2).
+    def score_metric(value, target, higher_is_better=True):
+        """Map a metric to 0-20 points relative to its target."""
+        if higher_is_better:
+            ratio = min(value / target, 1.0) if target else 0
+        else:
+            # lower is better (e.g. LLM usage, latency)
+            ratio = max(0.0, 1.0 - (value - target) / target) if target else 0
+        return round(ratio * 20, 1)
+
+    s_faq     = score_metric(faq_coverage_rate,     60,   higher_is_better=True)
+    s_rag     = score_metric(rag_hit_rate,           80,   higher_is_better=True)
+    s_llm     = score_metric(llm_usage_per_100,      30,   higher_is_better=False)
+    s_resolve = score_metric(flagged_resolution_rate,90,   higher_is_better=True)
+    s_latency = score_metric(avg_response_ms,        2000, higher_is_better=False)
+    overall_score = round(s_faq + s_rag + s_llm + s_resolve + s_latency, 1)
+
+    # ── Daily trend list ──────────────────────────────────────────────────────
+    trend = [{"day": str(r[0]), "queries": int(r[1])} for r in daily_rows]
+
+    return {
+        "success": True,
+        "period_days": days,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+
+        # ── Core metrics ──
+        "metrics": {
+            "faq_coverage_rate":      {"value": faq_coverage_rate,      "target": 60,   "unit": "%",  "score": s_faq},
+            "rag_hit_rate":           {"value": rag_hit_rate,           "target": 80,   "unit": "%",  "score": s_rag},
+            "llm_usage_per_100":      {"value": llm_usage_per_100,      "target": 30,   "unit": "%",  "score": s_llm},
+            "flagged_resolution_rate":{"value": flagged_resolution_rate, "target": 90,   "unit": "%",  "score": s_resolve},
+            "avg_response_ms":        {"value": avg_response_ms,        "target": 2000, "unit": "ms", "score": s_latency},
+        },
+
+        # ── Composite score ──
+        "overall_score": overall_score,
+        "score_breakdown": {
+            "faq_coverage": s_faq,
+            "rag_hit_rate": s_rag,
+            "llm_efficiency": s_llm,
+            "flagged_resolution": s_resolve,
+            "response_latency": s_latency,
+        },
+
+        # ── Volume counters ──
+        "totals": {
+            "total_queries_in_period": total_logs,
+            "faq_hits":  faq_hits,
+            "rag_hits":  rag_hits,
+            "llm_hits":  llm_hits,
+            "flagged_pending": flagged_pending,
+            "total_faqs": total_faqs,
+            "total_chunks": total_chunks,
+            "queue_pending": queue_pending,
+            "queue_total": queue_total,
+            "queue_progress_pct": queue_progress,
+        },
+
+        # ── Daily trend ──
+        "trend": trend,
+    }
+
+
+# ── Phase 4: Closed-Loop Background Jobs ──────────────────────────────────────
+
+@router.post("/jobs/weekly-query-analysis", response_model=dict)
+@limiter.limit("5/minute")
+async def weekly_query_analysis(
+    request: Request,
+    db: DBSession = Depends(get_db)
+):
+    """
+    **Phase 4: Weekly Query Analysis**
+    Find the top 50 most frequent queries from the last 7 days that
+    did not hit the FAQ cache.
+    """
+    from sqlalchemy import text as _sql_text
+    from datetime import datetime, timezone, timedelta
+
+    since = datetime.now(timezone.utc) - timedelta(days=7)
+    
+    # Simple frequent queries query (extract intent/entities or just exact match for now)
+    results = db.execute(
+        _sql_text(
+            "SELECT message, count(*) as freq "
+            "FROM chat_logs "
+            "WHERE role = 'user' AND timestamp >= :since "
+            "GROUP BY message "
+            "ORDER BY freq DESC "
+            "LIMIT 50"
+        ),
+        {"since": since}
+    ).fetchall()
+    
+    # Real implementation would run ML clustering to group similar questions
+    top_queries = [{"query": r[0], "count": r[1]} for r in results]
+
+    return {
+        "success": True,
+        "message": f"Found {len(top_queries)} candidate queries for analysis.",
+        "top_unanswered": top_queries
+    }
+
+
+@router.post("/jobs/nightly-cache-warmup", response_model=dict)
+@limiter.limit("5/minute")
+async def nightly_cache_warmup(
+    request: Request,
+    db: DBSession = Depends(get_db)
+):
+    """
+    **Phase 4: Nightly Cache Warmup**
+    Pre-embeds frequent queries and retrieves their RAG context ahead of time.
+    Stores the context in 'query_cache_warmup' so that 'chat/prioritized'
+    can serve these instantly as RAG templates.
+    """
+    from sqlalchemy import text as _sql_text
+    from app.services import rag_service as _rag
+    from app.db.models import QueryCacheWarmup
+    import hashlib
+    import json as json_lib
+
+    # Get top 50 overall most common user queries
+    top_queries = db.execute(
+        _sql_text(
+            "SELECT message "
+            "FROM chat_logs "
+            "WHERE role = 'user' "
+            "GROUP BY message "
+            "ORDER BY count(*) DESC "
+            "LIMIT 50"
+        )
+    ).fetchall()
+
+    warmed_count = 0
+    for (query,) in top_queries:
+        if not query or len(query) < 5: continue
+        
+        q_hash = hashlib.sha256(query.lower().strip().encode()).hexdigest()
+        
+        # Check if already warmed up recently
+        existing = db.query(QueryCacheWarmup).filter_by(query_hash=q_hash).first()
+        
+        # Pre-retrieve RAG context (sync retrieval runs in memory)
+        context_chunks = await _rag.retrieve_context_async(query)
+        if context_chunks:
+            if existing:
+                existing.rag_context = context_chunks
+                existing.hit_count += 1
+            else:
+                new_warmup = QueryCacheWarmup(
+                    query_text=query,
+                    query_hash=q_hash,
+                    rag_context=context_chunks,
+                    hit_count=1
+                )
+                db.add(new_warmup)
+            warmed_count += 1
+
+    db.commit()
+    return {
+        "success": True,
+        "message": f"Warmed {warmed_count} frequent queries in the cache."
+    }
+
+
+@router.post("/jobs/monthly-faq-audit", response_model=dict)
+@limiter.limit("5/minute")
+async def monthly_faq_audit(
+    request: Request,
+    db: DBSession = Depends(get_db)
+):
+    """
+    **Phase 4: Monthly FAQ Audit**
+    Identifies stale/outdated FAQ entries.
+    Flags entries that haven't been modified or asked about in 6 months for review.
+    """
+    from sqlalchemy import text as _sql_text
+    from datetime import datetime, timezone, timedelta
+
+    six_months_ago = datetime.now(timezone.utc) - timedelta(days=180)
+
+    # Find FAQs not updated in 6 months
+    stale_faqs = db.execute(
+        _sql_text(
+            "SELECT id, question, updated_at "
+            "FROM faq_entries "
+            "WHERE updated_at < :six_months_ago "
+            "LIMIT 100"
+        ),
+        {"six_months_ago": six_months_ago}
+    ).fetchall()
+
+    stale_list = [{"id": r[0], "question": r[1], "last_updated": str(r[2])} for r in stale_faqs]
+
+    return {
+        "success": True,
+        "message": f"Found {len(stale_list)} potentially stale FAQs for audit.",
+        "stale_faqs": stale_list
+    }

@@ -77,9 +77,16 @@ class TTSRequest(BaseModel):
 
 
 class RagIngestRequest(BaseModel):
-    """Request body for POST /api/rag/ingest."""
+    """Request body for POST /api/rag/ingest (and /api/rag/ingest-with-chunks)."""
     filename: str = Field(..., description="Original filename of the uploaded document")
     text: str = Field(..., min_length=1, description="Extracted plain text from the document")
+    doc_id: Optional[int] = Field(
+        None,
+        description="(Phase-2) ID of the general_documents row in the Admin DB. "
+                    "Required when calling /rag/ingest-with-chunks so chunks can be "
+                    "linked back to the source document.",
+    )
+
 
 
 class RagIngestResponse(BaseModel):

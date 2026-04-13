@@ -1,9 +1,11 @@
+import asyncio
+import hashlib
 import os
 import re
 import json
 import logging
 import requests
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -18,12 +20,66 @@ _rag_ready: bool = False
 _embedding_model = None
 _store_dir: str = ""         # set during initialize_rag
 
-_MAX_CHUNK_CHARS = 3000      # hard cap per chunk
+# ── Chunking constants (Phase-1: smaller, overlapping chunks) ─────────────────
+_CHUNK_SIZE    = 600   # chars per chunk (was 3000)
+_CHUNK_OVERLAP = 150   # overlap between consecutive chunks
+_MAX_CHUNK_CHARS = _CHUNK_SIZE  # kept for backward-compat references
 
 # Matches lines that are 3+ repeated decorative characters (═══, ----, ====, etc.)
 _DECO_LINE_RE = re.compile(r'^([═=\-_*~─━▬])\1{2,}$')
 
-FAQ_THRESHOLD = 0.72         # minimum cosine similarity to treat as a FAQ match
+FAQ_THRESHOLD = 0.65         # minimum cosine similarity to treat as a FAQ match
+
+# ── Redis cache (async) ───────────────────────────────────────────────────────
+_redis = None          # set by connect_redis()
+_RAG_CACHE_TTL = 900   # 15 minutes
+_RAG_CACHE_PREFIX = "rag:query:"
+
+
+async def connect_redis(redis_url: str) -> None:
+    """Open async Redis connection for RAG query caching."""
+    global _redis
+    try:
+        import redis.asyncio as aioredis
+        _redis = aioredis.from_url(redis_url, decode_responses=True)
+        await _redis.ping()
+        logger.info("[RAG] Redis cache connected.")
+    except Exception as e:
+        logger.warning(f"[RAG] Redis connection failed — caching disabled: {e}")
+        _redis = None
+
+
+async def disconnect_redis() -> None:
+    """Close the async Redis connection."""
+    global _redis
+    if _redis:
+        await _redis.aclose()
+        _redis = None
+
+
+def _make_rag_cache_key(query: str) -> str:
+    """Stable cache key from the normalised query text."""
+    digest = hashlib.sha256(query.lower().strip().encode()).hexdigest()
+    return f"{_RAG_CACHE_PREFIX}{digest}"
+
+
+async def invalidate_rag_cache() -> int:
+    """Delete all rag:query:* keys. Call after any ingest / delete / rebuild."""
+    if _redis is None:
+        return 0
+    deleted = 0
+    try:
+        cursor = 0
+        while True:
+            cursor, keys = await _redis.scan(cursor=cursor, match=f"{_RAG_CACHE_PREFIX}*", count=500)
+            if keys:
+                deleted += await _redis.delete(*keys)
+            if cursor == 0:
+                break
+        logger.info(f"[RAG] Invalidated {deleted} cached RAG queries.")
+    except Exception as e:
+        logger.warning(f"[RAG] Cache invalidation error: {e}")
+    return deleted
 
 
 # ── Text Processing Helpers ───────────────────────────────────────────────────
@@ -42,51 +98,95 @@ def _clean_text(text: str) -> str:
     return re.sub(r'\n{3,}', '\n\n', '\n'.join(cleaned)).strip()
 
 
-def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> List[str]:
+def _split_into_chunks(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _CHUNK_OVERLAP) -> List[str]:
     """
-    Chunk text so that every chunk contains only ONE topic — no bleed-over.
+    Sliding-window character-based chunker with overlap.
 
-    Rules (in order):
-    1. Split on SECTION headers → each section is its own unit.
-    2. Keep the whole section as one chunk (so "section 1" always returns
-       ALL of section 1, never a cut-off half).
-    3. If a section exceeds _MAX_CHUNK_CHARS, split only at blank lines
-       (paragraph boundaries) — never mid-sentence.
-    4. For content before the first SECTION header (intro text, names, etc.),
-       split by paragraph so short facts (e.g. "The mayor is John Doe") stay
-       in their own retrievable chunk.
+    Parameters
+    ----------
+    chunk_size : int
+        Maximum characters per chunk (default 600, Phase-1 value).
+    overlap : int
+        Characters shared between consecutive chunks (default 150, 25 %).
+
+    Strategy
+    --------
+    1. Start each window at a paragraph/sentence boundary when possible
+       so chunks don't begin mid-sentence.
+    2. Slide the window forward by (chunk_size - overlap) characters.
+    3. If we're mid-word at the end of a window, back up to the last space.
     """
     text = _clean_text(text)
-    section_pattern = re.compile(r'(?=\bSECTION\s+\d+\b)', re.IGNORECASE)
-    parts = section_pattern.split(text)
+    if not text:
+        return []
 
-    chunks = []
+    step = max(chunk_size - overlap, 1)
+    chunks: List[str] = []
+    start = 0
+    text_len = len(text)
 
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
+    while start < text_len:
+        end = min(start + chunk_size, text_len)
 
-        if len(part) <= _MAX_CHUNK_CHARS:
-            chunks.append(part)
-            continue
+        # If not at the end, try to snap to a sentence boundary ('. ', '\n')
+        if end < text_len:
+            snap = text.rfind('\n', start, end)
+            if snap == -1 or (end - snap) > 200:
+                snap = text.rfind('. ', start, end)
+            if snap != -1 and snap > start:
+                end = snap + 1  # include the delimiter
 
-        # Too long — split at paragraph boundaries only
-        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', part) if p.strip()]
-        current = ""
-        for para in paragraphs:
-            candidate = (current + "\n\n" + para).strip() if current else para
-            if len(candidate) <= _MAX_CHUNK_CHARS:
-                current = candidate
-            else:
-                if current:
-                    chunks.append(current)
-                # A single paragraph longer than the cap: keep it whole anyway
-                current = para
-        if current:
-            chunks.append(current)
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+
+        start += step
 
     return chunks
+
+
+def _chunk_text(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _CHUNK_OVERLAP) -> List[str]:
+    """
+    Backward-compatible wrapper — delegates to _split_into_chunks.
+
+    Legacy callers (build_index, rebuild_index, add_document_to_index,
+    faq_generate endpoint) all call this function.
+    """
+    return _split_into_chunks(text, chunk_size=chunk_size, overlap=overlap)
+
+
+# Pre-compiled pattern — matches "SECTION 3", "Section 3.", "Sec. 3", "Art. IV", "Article 5"
+_SECTION_HEADER_RE = re.compile(
+    r'\b(?:SECTION|Section|Sec\.?|ARTICLE|Article|Art\.?)\s+([\dIVXivx]+)',
+    re.IGNORECASE,
+)
+
+
+def _detect_section(chunk: str) -> str:
+    """
+    Return a human-readable section label inferred from *chunk* text.
+
+    Strategy (Phase-1 requirement: ``section`` metadata is always populated):
+    1. Scan for a "Section N" / "Article N" header at or near the start of the chunk.
+    2. Fall back to scanning the full chunk for any section reference.
+    3. If nothing is found, return ``"General"``.
+    """
+    # Prefer matches near the beginning of the chunk (header lines)
+    head = chunk[:300]
+    m = _SECTION_HEADER_RE.search(head)
+    if m:
+        keyword = m.group(0).split()[0].title()  # e.g. "Section", "Article"
+        num     = m.group(1).upper()              # e.g. "3", "IV"
+        return f"{keyword} {num}"
+
+    # Fall back to first match anywhere in the chunk
+    m = _SECTION_HEADER_RE.search(chunk)
+    if m:
+        keyword = m.group(0).split()[0].title()
+        num     = m.group(1).upper()
+        return f"{keyword} {num}"
+
+    return "General"
 
 
 # ── ChromaDB Connection ───────────────────────────────────────────────────────
@@ -227,7 +327,7 @@ def _build_index_from_api(api_url: str) -> None:
     all_chunks = []
     all_filenames = []
     for original_name, text in doc_list:
-        doc_chunks = _chunk_text(text, chunk_size=500, overlap=100)
+        doc_chunks = _chunk_text(text)  # uses global CHUNK_SIZE=600, OVERLAP=150
         all_chunks.extend(doc_chunks)
         all_filenames.extend([original_name] * len(doc_chunks))
 
@@ -246,7 +346,10 @@ def _build_index_from_api(api_url: str) -> None:
             ids=batch_ids,
             documents=batch_chunks,
             embeddings=batch_embeddings,
-            metadatas=[{"filename": fn} for fn in batch_filenames],
+            metadatas=[
+                {"filename": fn, "section": _detect_section(chunk)}
+                for fn, chunk in zip(batch_filenames, batch_chunks)
+            ],
         )
 
     logger.info(f"[RAG] Ready. {len(all_chunks)} chunks indexed from {len(doc_list)} documents.")
@@ -316,7 +419,7 @@ def rebuild_index() -> int:
     all_chunks = []
     all_filenames = []
     for original_name, text in doc_list:
-        doc_chunks = _chunk_text(text, chunk_size=500, overlap=100)
+        doc_chunks = _chunk_text(text)  # uses global CHUNK_SIZE=600, OVERLAP=150
         all_chunks.extend(doc_chunks)
         all_filenames.extend([original_name] * len(doc_chunks))
 
@@ -336,7 +439,10 @@ def rebuild_index() -> int:
             ids=batch_ids,
             documents=batch_chunks,
             embeddings=batch_embeddings,
-            metadatas=[{"filename": fn} for fn in batch_filenames],
+            metadatas=[
+                {"filename": fn, "section": _detect_section(chunk)}
+                for fn, chunk in zip(batch_filenames, batch_chunks)
+            ],
         )
 
     _rag_ready = True
@@ -362,7 +468,7 @@ def add_document_to_index(text: str, filename: str = "unknown") -> int:
     if _embedding_model is None:
         raise RuntimeError("[RAG] Embedding model is not loaded. Call initialize_rag() first.")
 
-    new_chunks = _chunk_text(text, chunk_size=500, overlap=100)
+    new_chunks = _chunk_text(text)  # uses global CHUNK_SIZE=600, OVERLAP=150
     if not new_chunks:
         logger.warning(f"[RAG] No chunks extracted from '{filename}'. Skipping.")
         return 0
@@ -371,7 +477,6 @@ def add_document_to_index(text: str, filename: str = "unknown") -> int:
     new_embeddings = _embed(new_chunks)
 
     # Generate unique IDs using filename + index
-    import hashlib
     base_hash = hashlib.md5(filename.encode()).hexdigest()[:8]
     existing_count = collection.count()
     chunk_ids = [f"{base_hash}_{existing_count + i}" for i in range(len(new_chunks))]
@@ -380,7 +485,10 @@ def add_document_to_index(text: str, filename: str = "unknown") -> int:
         ids=chunk_ids,
         documents=new_chunks,
         embeddings=new_embeddings,
-        metadatas=[{"filename": filename}] * len(new_chunks),
+        metadatas=[
+            {"filename": filename, "section": _detect_section(chunk)}
+            for chunk in new_chunks
+        ],
     )
 
     _rag_ready = True
@@ -416,124 +524,231 @@ def delete_document_from_index(filename: str) -> int:
     return count
 
 
-def retrieve_context(query: str, top_k: int = 3) -> Optional[str]:
+def _do_retrieve(query: str, top_k: int) -> Optional[str]:
     """
-    Retrieve the most relevant document chunks for a user query.
-
-    Args:
-        query: The user's question or message.
-        top_k: How many chunks to return.
-
-    Returns:
-        A single string with the top-K chunks joined, or None if RAG is not ready.
+    Core (synchronous) ChromaDB retrieval with keyword boosting and re-ranking.
+    Called by both retrieve_context (sync wrapper) and the async retrieve_parallel.
     """
-    if not _rag_ready or _embedding_model is None:
-        return None
-
     collection = _get_rag_collection()
     if collection.count() == 0:
         return None
 
-    try:
-        query_lower = query.lower()
+    query_lower = query.lower()
 
-        # 1. Embed the query
-        query_emb = _embed([query])
+    # 1. Embed the query
+    query_emb = _embed([query])
 
-        # Request more results than needed so we can re-rank with keyword boosting
-        fetch_k = min(top_k * 5, collection.count())
+    # Request more results than needed so we can re-rank with keyword boosting
+    fetch_k = min(top_k * 5, collection.count())
 
-        results = collection.query(
-            query_embeddings=query_emb,
-            n_results=fetch_k,
-            include=["documents", "distances", "metadatas"],
-        )
+    results = collection.query(
+        query_embeddings=query_emb,
+        n_results=fetch_k,
+        include=["documents", "distances", "metadatas"],
+    )
 
-        if not results["documents"] or not results["documents"][0]:
-            return None
-
-        docs = results["documents"][0]
-        # ChromaDB returns distances (for cosine: distance = 1 - similarity)
-        distances = results["distances"][0]
-        similarities = [1.0 - d for d in distances]
-
-        # 2. Section-targeted boosting
-        section_query_match = re.search(r'\bsection\s+(\d+)\b', query_lower)
-        if section_query_match:
-            target_section = section_query_match.group(1)
-            target_pattern = re.compile(
-                rf'\bsection\s+{re.escape(target_section)}\b', re.IGNORECASE
-            )
-            other_section_pattern = re.compile(r'\bsection\s+(\d+)\b', re.IGNORECASE)
-
-            for i, chunk_text in enumerate(docs):
-                chunk_stripped = chunk_text.strip()
-                chunk_lower_s = chunk_stripped.lower()
-
-                if target_pattern.match(chunk_lower_s):
-                    similarities[i] += 3.0
-                elif target_pattern.search(chunk_lower_s):
-                    similarities[i] += 2.0
-                else:
-                    other_matches = other_section_pattern.findall(chunk_lower_s)
-                    if other_matches and target_section not in other_matches:
-                        similarities[i] -= 0.5
-
-        # 3. Hybrid Keyword Boost (Sparse Retrieval)
-        stop_words = {
-            "the", "and", "for", "with", "from", "that", "this", "what",
-            "where", "how", "who", "when", "why", "are", "you", "can",
-            "tell", "give", "show", "about", "status", "document", "documents",
-            "my", "is", "me", "its", "their", "a", "an", "in", "of", "to",
-            "be", "do", "on", "at", "by", "up", "as", "it", "or", "was",
-            "has", "had", "will", "just", "please", "get", "let", "know",
-        }
-        raw_words = re.findall(r'\b[a-zA-Z0-9-]+\b', query_lower)
-        keywords = [
-            w for w in raw_words
-            if (len(w) >= 3 or w.isdigit()) and w not in stop_words
-        ]
-
-        if keywords:
-            candidate_phrases: List[str] = []
-            for n in range(2, min(len(keywords) + 1, 5)):
-                for j in range(len(keywords) - n + 1):
-                    phrase = " ".join(keywords[j: j + n])
-                    if phrase in query_lower:
-                        candidate_phrases.append(phrase)
-
-            for i, chunk_text in enumerate(docs):
-                chunk_lower_kw = chunk_text.lower()
-
-                matches = sum(1 for kw in keywords if kw in chunk_lower_kw)
-                phrase_boost = sum(
-                    1.0 for ph in candidate_phrases if ph in chunk_lower_kw
-                )
-
-                if matches > 0 or phrase_boost > 0:
-                    similarities[i] += (matches * 0.3) + phrase_boost
-
-        # 4. Re-rank by boosted similarity and take top_k
-        ranked = sorted(range(len(docs)), key=lambda i: similarities[i], reverse=True)
-
-        min_sim = 0.10 if section_query_match else 0.30
-        result_docs = [
-            docs[i]
-            for i in ranked[:top_k]
-            if similarities[i] >= min_sim
-        ]
-
-        if not result_docs:
-            return None
-
-        # Clean decorative lines from retrieved chunks before sending to LLM
-        result_docs = [_clean_text(d) for d in result_docs]
-        result_docs = [d for d in result_docs if d]
-
-        return "\n\n---\n\n".join(result_docs) if result_docs else None
-    except Exception as e:
-        logger.error(f"[RAG] Retrieval failed: {e}")
+    if not results["documents"] or not results["documents"][0]:
         return None
+
+    docs = results["documents"][0]
+    # ChromaDB returns distances (for cosine: distance = 1 - similarity)
+    distances = results["distances"][0]
+    similarities = [1.0 - d for d in distances]
+
+    # 2. Section-targeted boosting
+    section_query_match = re.search(r'\bsection\s+(\d+)\b', query_lower)
+    if section_query_match:
+        target_section = section_query_match.group(1)
+        target_pattern = re.compile(
+            rf'\bsection\s+{re.escape(target_section)}\b', re.IGNORECASE
+        )
+        other_section_pattern = re.compile(r'\bsection\s+(\d+)\b', re.IGNORECASE)
+
+        for i, chunk_text in enumerate(docs):
+            chunk_stripped = chunk_text.strip()
+            chunk_lower_s = chunk_stripped.lower()
+
+            if target_pattern.match(chunk_lower_s):
+                similarities[i] += 3.0
+            elif target_pattern.search(chunk_lower_s):
+                similarities[i] += 2.0
+            else:
+                other_matches = other_section_pattern.findall(chunk_lower_s)
+                if other_matches and target_section not in other_matches:
+                    similarities[i] -= 0.5
+
+    # 3. Hybrid Keyword Boost (Sparse Retrieval)
+    stop_words = {
+        "the", "and", "for", "with", "from", "that", "this", "what",
+        "where", "how", "who", "when", "why", "are", "you", "can",
+        "tell", "give", "show", "about", "status", "document", "documents",
+        "my", "is", "me", "its", "their", "a", "an", "in", "of", "to",
+        "be", "do", "on", "at", "by", "up", "as", "it", "or", "was",
+        "has", "had", "will", "just", "please", "get", "let", "know",
+    }
+    raw_words = re.findall(r'\b[a-zA-Z0-9-]+\b', query_lower)
+    keywords = [
+        w for w in raw_words
+        if (len(w) >= 3 or w.isdigit()) and w not in stop_words
+    ]
+
+    if keywords:
+        candidate_phrases: List[str] = []
+        for n in range(2, min(len(keywords) + 1, 5)):
+            for j in range(len(keywords) - n + 1):
+                phrase = " ".join(keywords[j: j + n])
+                if phrase in query_lower:
+                    candidate_phrases.append(phrase)
+
+        for i, chunk_text in enumerate(docs):
+            chunk_lower_kw = chunk_text.lower()
+
+            matches = sum(1 for kw in keywords if kw in chunk_lower_kw)
+            phrase_boost = sum(
+                1.0 for ph in candidate_phrases if ph in chunk_lower_kw
+            )
+
+            if matches > 0 or phrase_boost > 0:
+                similarities[i] += (matches * 0.3) + phrase_boost
+
+    # 4. Re-rank by boosted similarity and take top_k
+    ranked = sorted(range(len(docs)), key=lambda i: similarities[i], reverse=True)
+
+    min_sim = 0.10 if section_query_match else 0.30
+    result_docs = [
+        docs[i]
+        for i in ranked[:top_k]
+        if similarities[i] >= min_sim
+    ]
+
+    if not result_docs:
+        return None
+
+    # Clean decorative lines from retrieved chunks before sending to LLM
+    result_docs = [_clean_text(d) for d in result_docs]
+    result_docs = [d for d in result_docs if d]
+
+    return "\n\n---\n\n".join(result_docs) if result_docs else None
+
+
+def retrieve_context(query: str, top_k: int = 3) -> Optional[str]:
+    """
+    Synchronous public API: retrieve document chunks relevant to *query*.
+
+    Checks the Redis cache first (rag:query:* keys, TTL 15 min).
+    On a miss, runs the full ChromaDB vector search and caches the result.
+
+    Returns a single string with the top-K chunks joined, or None.
+    """
+    if not _rag_ready or _embedding_model is None:
+        return None
+
+    # ── Try Redis cache (best-effort; never blocks on failure) ────────────────
+    cache_key = _make_rag_cache_key(query)
+    if _redis is not None:
+        try:
+            # Use asyncio.run_coroutine_threadsafe / get_event_loop trick only
+            # when called from a sync context.  If we're inside an async context
+            # the caller should use retrieve_context_async instead.
+            loop = None
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+
+            if loop is None:
+                # Pure sync context — safe to use asyncio.run
+                raw = asyncio.run(_redis.get(cache_key))
+                if raw:
+                    logger.debug(f"[RAG] Cache hit for key {cache_key[:32]}")
+                    return json.loads(raw)
+        except Exception:
+            pass  # cache errors are non-fatal
+
+    result = _do_retrieve(query, top_k)
+
+    # ── Store in Redis (best-effort) ──────────────────────────────────────────
+    if result is not None and _redis is not None:
+        try:
+            loop = None
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            if loop is None:
+                asyncio.run(_redis.setex(cache_key, _RAG_CACHE_TTL, json.dumps(result)))
+        except Exception:
+            pass
+
+    return result
+
+
+async def retrieve_context_async(query: str, top_k: int = 3) -> Optional[str]:
+    """
+    Async version of retrieve_context — Redis cache + ChromaDB via thread pool.
+
+    Use this from async endpoints / conversation pipeline so the event loop
+    is not blocked by the (synchronous) sentence-transformer encode call.
+    """
+    if not _rag_ready or _embedding_model is None:
+        return None
+
+    cache_key = _make_rag_cache_key(query)
+
+    # ── Check Redis cache ─────────────────────────────────────────────────────
+    if _redis is not None:
+        try:
+            raw = await _redis.get(cache_key)
+            if raw:
+                logger.debug(f"[RAG] Async cache hit for key {cache_key[:32]}")
+                return json.loads(raw)
+        except Exception:
+            pass
+
+    # ── Run synchronous ChromaDB retrieval in a thread ───────────────────────
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, _do_retrieve, query, top_k)
+
+    # ── Store result in Redis ─────────────────────────────────────────────────
+    if result is not None and _redis is not None:
+        try:
+            await _redis.setex(cache_key, _RAG_CACHE_TTL, json.dumps(result))
+        except Exception:
+            pass
+
+    return result
+
+
+async def _faq_lookup_async(query: str) -> Optional[str]:
+    """
+    Async wrapper around the synchronous ChromaDB FAQ lookup.
+    Runs the blocking call in an executor so it doesn't stall the event loop.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, faq_lookup, query)
+
+
+async def retrieve_parallel(
+    query: str,
+    top_k: int = 3,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Fire FAQ lookup and RAG retrieval simultaneously with asyncio.gather.
+
+    Returns
+    -------
+    (faq_answer, rag_context)
+        faq_answer  — curated answer string if similarity >= FAQ_THRESHOLD, else None
+        rag_context — joined chunk string from vector search, else None
+
+    The caller should use faq_answer first; fall back to rag_context.
+    Net latency = max(faq_time, rag_time) instead of their sum.
+    """
+    faq_answer, rag_context = await asyncio.gather(
+        _faq_lookup_async(query),
+        retrieve_context_async(query, top_k=top_k),
+    )
+    return faq_answer, rag_context
 
 
 def is_ready() -> bool:
@@ -613,15 +828,53 @@ def add_faq_to_cache(faq_id: int, question: str, answer: str) -> None:
     logger.info(f"[FAQ] Added FAQ id={faq_id} to ChromaDB.")
 
 
+def add_faq_question_variants(faq_id: int, variants: list, answer: str) -> None:
+    """
+    Add extra question phrasings for an existing FAQ entry into ChromaDB.
+    Each variant gets its own ChromaDB document (id = faq_{faq_id}_var_{i})
+    so the FAQ lookup can match broader rephrasing of the same question.
+    """
+    if _embedding_model is None or not variants:
+        return
+
+    collection = _get_faq_collection()
+    clean = [v.strip() for v in variants if v and v.strip()]
+    if not clean:
+        return
+
+    embeddings = _embed(clean)
+    for i, (text, emb) in enumerate(zip(clean, embeddings)):
+        vid = f"faq_{faq_id}_var_{i}"
+        collection.upsert(
+            ids=[vid],
+            documents=[text],
+            embeddings=[emb],
+            metadatas=[{"faq_id": faq_id, "question": text, "answer": answer}],
+        )
+
+    logger.info(f"[FAQ] Added {len(clean)} question variants for FAQ id={faq_id}.")
+
+
 def remove_faq_from_cache(faq_id: int) -> None:
-    """Remove a FAQ entry from the ChromaDB FAQ collection by its DB id."""
+    """Remove a FAQ entry (and all its variants) from the ChromaDB FAQ collection."""
     collection = _get_faq_collection()
 
     try:
+        # Delete main entry
         collection.delete(ids=[f"faq_{faq_id}"])
-        logger.info(f"[FAQ] Removed FAQ id={faq_id} from ChromaDB.")
     except Exception:
-        pass  # entry may not exist
+        pass
+
+    # Delete any variant entries (faq_{id}_var_0, faq_{id}_var_1, ...)
+    try:
+        existing = collection.get(include=[])
+        variant_ids = [vid for vid in existing["ids"] if vid.startswith(f"faq_{faq_id}_var_")]
+        if variant_ids:
+            collection.delete(ids=variant_ids)
+    except Exception:
+        pass
+
+    logger.info(f"[FAQ] Removed FAQ id={faq_id} and its variants from ChromaDB.")
 
 
 def faq_lookup(query: str) -> Optional[str]:
