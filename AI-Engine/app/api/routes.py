@@ -361,18 +361,28 @@ async def rag_rebuild(request: Request):
 @limiter.limit("5/minute")
 async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
     """
-    LLM-powered FAQ generation from document text.
+    Qwen3-powered training data generation from document text.
 
-    Instead of dumb regex templates, this sends document chunks to the local
-    LLM (Ollama) and asks it to generate specific, high-quality Q&A pairs
-    with a confidence score (1-10).
+    For each document chunk, Qwen3 generates:
+      • 1 canonical answer
+      • 1 primary direct question
+      • 3-4 related questions (different angles / adjacent topics)
+      • 3-4 question variations (same meaning, different phrasing)
 
-    Confidence thresholds:
-      ≥ 8 → auto-approve (goes straight to faq_entries, no manual review)
-      5-7 → pending review in admin
-      < 5 → discarded (never stored)
+    All questions share the same canonical answer. This gives the RAG
+    semantic matcher many entry points — users can phrase a question any
+    way they like and still get the right answer.
 
-    Falls back gracefully if the LLM is unavailable.
+    Confidence is scored against text evidence, not a vague scale:
+      10   — answer is a direct quote / exact fact from the text
+      8-9  — answer clearly stated in text, no ambiguity
+      6-7  — answer derivable from text with minor synthesis
+      4-5  — answer implied but not explicit (pending review)
+      1-3  — answer not in text → discarded automatically
+
+    Auto-approve threshold: ≥ 8  (straight to FAQ, no manual review)
+    Pending review:         5-7
+    Discarded:              < 5
     """
     import httpx
     import json as json_lib
@@ -384,52 +394,60 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
     if not text:
         return {"success": True, "pairs": [], "total": 0}
 
-    # Clean decorative separator lines (═══, ----, ====, etc.) before chunking
+    # Clean decorative separator lines before chunking
     import re as _re
     cleaned_lines = []
     for line in text.splitlines():
         t = line.strip()
-        # Drop lines that are 3+ repeated decorative chars
         if _re.match(r'^([═=\-_*~─━▬])\1{2,}$', t):
             continue
-        # Drop lines that are mostly non-alphanumeric (table borders, art)
         alnum = len(_re.sub(r'[^a-zA-Z0-9]', '', t))
         if len(t) > 0 and alnum / len(t) < 0.2:
             continue
         cleaned_lines.append(line)
     text = _re.sub(r'\n{3,}', '\n\n', '\n'.join(cleaned_lines)).strip()
 
-    # Step 1: Chunk the document using the same strategy as the RAG index
     chunks = _chunk_text(text)
     chunks = [c.strip() for c in chunks if len(c.strip()) >= 120]
-
-    # Take first 25 most informative chunks (avoids LLM timeout on huge docs)
-    selected = chunks[:25]
+    selected = chunks[:30]  # up to 30 chunks per doc
 
     if not selected:
         return {"success": True, "pairs": [], "total": 0}
 
     llm_url = os.environ.get("LLM_SERVICE_URL", "http://localhost:8001")
-    all_pairs = []  # each item carries a hidden _source field for the judge step
+    all_pairs = []
 
-    # ── Step 2: Generation — 3 diverse question angles per chunk ──────────────
+    # ── Step 1: Generation — 1 answer + primary + related + variations per chunk ─
     gen_system = (
-        "You are an expert FAQ creator for a Philippine local government chatbot (Surigao City). "
-        "Given text excerpts from official government documents, generate EXACTLY 3 diverse Q&A pairs "
-        "per excerpt that citizens would actually ask — using different question angles.\n\n"
+        "You are a training data generator for a Philippine local government chatbot (Surigao City DTS). "
+        "Your job is to read a text excerpt and produce one canonical answer plus MANY questions that lead to it.\n\n"
+        "WHY: The chatbot uses semantic similarity to match user questions to stored Q&A pairs. "
+        "More question variations = higher chance of matching, even when users phrase things differently.\n\n"
+        "FOR EACH EXCERPT produce:\n"
+        "  • primary   — the most direct, natural question a citizen would ask\n"
+        "  • related   — 3 questions about adjacent or follow-up topics in the same excerpt\n"
+        "  • variations — 4 different ways a citizen might ask the PRIMARY question\n"
+        "All questions must share ONE canonical answer derived directly from the text.\n\n"
+        "CONFIDENCE RUBRIC (be accurate — do not default to the middle):\n"
+        "  10  — answer is a verbatim quote or exact numbered fact from the text\n"
+        "  8-9 — answer is clearly and fully stated in the text, zero ambiguity\n"
+        "  6-7 — answer is derivable from text with minor synthesis\n"
+        "  4-5 — answer is implied but not explicitly written\n"
+        "  1-3 — answer requires guessing or is NOT in the text\n\n"
+        "OUTPUT FORMAT — a flat JSON array where each entry has:\n"
+        '  {"question": "...", "answer": "...", "confidence": <int>, '
+        '"section": "...", "question_type": "primary|related|variation"}\n\n'
         "STRICT RULES:\n"
-        "1. Each of the 3 questions MUST use a different angle — e.g. 'What is X?', 'How do you X?', "
-        "'Who is eligible for X?', 'What are the requirements for X?', 'When does X apply?'\n"
-        "2. Questions must be fully answerable from the given text — never guess\n"
-        "3. Answers must come DIRECTLY from the text — no invented details\n"
-        "4. Rate each pair confidence 1-10 (9-10=crystal clear, 7-8=good, 5-6=acceptable, 1-4=skip)\n"
-        "5. Return ONLY a valid JSON array — no markdown, no explanation outside the array\n"
-        "6. If a chunk is just a title/header/signature with no real content, return []\n"
-        "7. The 3 diverse questions help citizens find answers even when they phrase things differently"
+        "1. All questions for the same excerpt MUST share the exact same answer string\n"
+        "2. Variations must rephrase the primary, NOT introduce new facts\n"
+        "3. Related questions may cover different parts of the same excerpt\n"
+        "4. Never invent details not found in the text\n"
+        "5. If the excerpt is just a header/signature with no real content, return []\n"
+        "6. Return ONLY the JSON array — no markdown, no explanation"
     )
 
-    # Process in batches of 3 chunks (keeps prompts within Ollama context window)
-    batch_size = 3
+    # Process 2 chunks per batch (larger output per chunk needs more context window)
+    batch_size = 2
     for batch_idx in range(0, len(selected), batch_size):
         batch = selected[batch_idx: batch_idx + batch_size]
         numbered = "\n\n---\n\n".join(
@@ -439,19 +457,18 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
         prompt = (
             f"Document: {filename}\n\n"
             f"Text excerpts:\n{numbered}\n\n"
-            f"For EACH excerpt, generate EXACTLY 3 diverse FAQ pairs (different question angles). "
-            f"Return all pairs as a single flat JSON array:\n"
-            f'[{{"question": "What are the requirements?", "answer": "The requirements include...", '
-            f'"confidence": 8, "section": "Section 1"}}]\n\n'
-            f"Rules:\n"
-            f"- 3 pairs per excerpt minimum (unless it has no real content)\n"
-            f"- Use different question words: What, How, Who, When, Why, What are the requirements, etc.\n"
-            f"- section field = label from the excerpt (e.g. 'Section 2', 'Eligibility')\n"
-            f"- Return ONLY the JSON array, nothing else"
+            f"For EACH excerpt above, generate:\n"
+            f"  • 1 primary question + canonical answer\n"
+            f"  • 3 related questions (same answer)\n"
+            f"  • 4 variation questions (same answer, different phrasing of the primary)\n\n"
+            f"That is ~8 entries per excerpt. All sharing ONE answer per excerpt.\n\n"
+            f"section field = the section label from the excerpt (e.g. 'Section 2', 'Eligibility', etc.)\n"
+            f"question_type = 'primary', 'related', or 'variation'\n\n"
+            f"Return ONLY the flat JSON array."
         )
 
         try:
-            async with httpx.AsyncClient(timeout=90.0) as client:
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 res = await client.post(
                     f"{llm_url}/api/generate",
                     json={"prompt": prompt, "system_prompt": gen_system},
@@ -470,23 +487,26 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
                             a = str(p.get("answer", "")).strip()
                             if not q or not a or len(a) < 10:
                                 continue
-                            conf = max(1, min(10, int(p.get("confidence", 5))))
-                            if conf < 5:
-                                continue  # discard low-quality pairs
+                            try:
+                                conf = max(1, min(10, int(float(p.get("confidence", 5)))))
+                            except (ValueError, TypeError):
+                                conf = 5
+                            if conf < 4:
+                                continue  # discard evidently unsupported pairs
                             all_pairs.append({
                                 "question": q,
                                 "answer": a,
                                 "confidence": conf,
                                 "section": str(p.get("section", "")).strip(),
-                                # hidden field — source text for judge step, stripped before returning
-                                "_source": numbered[:1200],
+                                "question_type": str(p.get("question_type", "primary")).strip(),
+                                "_source": numbered[:1500],
                             })
 
         except Exception as e:
-            logger.warning(f"[FAQ Generate] LLM batch {batch_idx // batch_size + 1} failed: {e}")
+            logger.warning(f"[FAQ Generate] Batch {batch_idx // batch_size + 1} failed: {e}")
             continue
 
-    # ── Deduplicate by lowercased question text ────────────────────────────────
+    # ── Deduplicate by lowercased question ────────────────────────────────────
     seen_q: set = set()
     deduped = []
     for p in all_pairs:
@@ -495,40 +515,36 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
             seen_q.add(key)
             deduped.append(p)
 
-    # ── Step 3: Judge / Self-Correction — verify each pair against source text ─
-    # The judge is a second LLM pass that drops any pair whose answer is not
-    # actually supported by the source chunk (catches hallucinations).
+    # ── Step 2: Judge — verify each pair's answer is supported by source text ──
     judge_system = (
         "You are a strict fact-checker for a government chatbot. "
-        "Your only job is to verify that each Q&A pair is fully supported by its source text. "
-        "Be strict: if the answer contains ANY detail not found in the source text, mark it 'drop'. "
-        "If the question cannot be answered from the source text alone, mark it 'drop'."
+        "Verify that each Q&A pair's answer is fully supported by its source text. "
+        "Mark 'drop' if the answer adds ANY detail not in the source, or if it cannot "
+        "be answered from the source alone. Mark 'keep' only when the answer is clearly grounded."
     )
 
     verified_pairs = []
-    judge_batch_size = 5  # verify 5 pairs per judge call
+    judge_batch_size = 6
     for judge_idx in range(0, len(deduped), judge_batch_size):
         judge_batch = deduped[judge_idx: judge_idx + judge_batch_size]
         items_text = "\n\n".join(
-            f"[Pair {judge_idx + k + 1}]\n"
-            f'Source text: """{p["_source"][:800]}"""\n'
-            f"Question: {p['question']}\n"
-            f"Answer: {p['answer']}"
+            f"[Pair {judge_idx + k + 1}] ({p.get('question_type','primary')})\n"
+            f'Source: """{p["_source"][:800]}"""\n'
+            f"Q: {p['question']}\n"
+            f"A: {p['answer']}"
             for k, p in enumerate(judge_batch)
         )
         judge_prompt = (
-            f"Review each Q&A pair below. For each, check:\n"
-            f"1. Is the question answerable using ONLY the source text?\n"
-            f"2. Is the answer accurate with no hallucinated details?\n\n"
+            f"Review each Q&A pair. For each:\n"
+            f"1. Is the answer fully supported by the source text?\n"
+            f"2. Does it add any invented details?\n\n"
             f"{items_text}\n\n"
-            f"Return a JSON array — one object per pair, in order:\n"
-            f'[{{"id": 1, "verdict": "keep", "reason": "answer is directly quoted"}}, '
-            f'{{"id": 2, "verdict": "drop", "reason": "answer adds details not in source"}}]\n'
-            f"verdict must be exactly 'keep' or 'drop'. Return ONLY the JSON array."
+            f'Return JSON array: [{{"id": 1, "verdict": "keep"}}, {{"id": 2, "verdict": "drop"}}]\n'
+            f"verdict = 'keep' or 'drop' only. Return ONLY the JSON array."
         )
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=90.0) as client:
                 res = await client.post(
                     f"{llm_url}/api/generate",
                     json={"prompt": judge_prompt, "system_prompt": judge_system},
@@ -540,43 +556,43 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
                 if json_match:
                     verdicts = json_lib.loads(json_match.group(0))
                     if isinstance(verdicts, list):
-                        # build map: pair number → verdict
-                        verdict_map = {}
-                        for v in verdicts:
-                            if isinstance(v, dict):
-                                verdict_map[int(v.get("id", 0))] = v
+                        verdict_map = {int(v.get("id", 0)): v for v in verdicts if isinstance(v, dict)}
                         for k, p in enumerate(judge_batch):
                             pair_num = judge_idx + k + 1
                             vdict = verdict_map.get(pair_num, {})
                             if vdict.get("verdict", "keep").lower() != "drop":
                                 verified_pairs.append(p)
                             else:
-                                logger.info(
-                                    f"[FAQ Judge] Dropped: '{p['question'][:60]}' — "
-                                    f"{vdict.get('reason', '')[:80]}"
-                                )
+                                logger.info(f"[FAQ Judge] Dropped: '{p['question'][:60]}'")
                     else:
-                        verified_pairs.extend(judge_batch)  # malformed — keep all
+                        verified_pairs.extend(judge_batch)
                 else:
-                    verified_pairs.extend(judge_batch)  # no JSON — keep all
+                    verified_pairs.extend(judge_batch)
 
         except Exception as e:
             logger.warning(f"[FAQ Judge] Batch {judge_idx // judge_batch_size + 1} failed: {e}")
-            verified_pairs.extend(judge_batch)  # non-blocking — keep all on error
+            verified_pairs.extend(judge_batch)
 
-    # Strip internal _source field before returning to caller
+    # Strip internal field, sort by confidence, return all (no arbitrary cap)
     for p in verified_pairs:
         p.pop("_source", None)
 
-    # Sort by confidence descending, cap at 40 total proposals
-    verified_pairs.sort(key=lambda x: x["confidence"], reverse=True)
-    final = verified_pairs[:40]
+    verified_pairs.sort(key=lambda x: (x["confidence"], x.get("question_type") == "primary"), reverse=True)
 
     logger.info(
-        f"[FAQ Generate] '{filename}': {len(deduped)} generated → "
-        f"{len(verified_pairs)} passed judge → {len(final)} returned"
+        f"[FAQ Generate] '{filename}': {len(all_pairs)} raw → "
+        f"{len(deduped)} deduped → {len(verified_pairs)} passed judge"
     )
-    return {"success": True, "pairs": final, "total": len(final)}
+    return {
+        "success": True,
+        "pairs": verified_pairs,
+        "total": len(verified_pairs),
+        "breakdown": {
+            "primary": sum(1 for p in verified_pairs if p.get("question_type") == "primary"),
+            "related": sum(1 for p in verified_pairs if p.get("question_type") == "related"),
+            "variation": sum(1 for p in verified_pairs if p.get("question_type") == "variation"),
+        },
+    }
 
 
 @router.post("/faq/suggest", response_model=dict)
@@ -710,6 +726,115 @@ async def faq_list(request: Request, db: DBSession = Depends(get_db)):
             for e in entries
         ],
     )
+
+
+@router.get("/knowledge-graph", response_model=dict)
+@limiter.limit("30/minute")
+async def knowledge_graph(request: Request, db: DBSession = Depends(get_db)):
+    """
+    Return the AI's knowledge as a force-directed graph for the admin brain visualizer.
+
+    Nodes:
+      - section  hubs  (one per unique FAQ section, larger, blue)
+      - faq      nodes (one per FAQ entry, colored by confidence/type)
+      - intent   nodes (one per trained intent class, purple)
+
+    Edges:
+      - section → faq  (FAQ belongs to a section)
+      - intent  → faq  (FAQ question text overlaps with intent keywords)
+    """
+    from app.ml.intent_classifier import IntentClassifier as _IC
+
+    entries = db.query(FAQEntry).order_by(FAQEntry.section).all()
+    training = db.query(TrainingData).all()
+
+    nodes = []
+    edges = []
+    node_ids: set = set()
+
+    # ── Section hub nodes ──────────────────────────────────────────────────
+    section_map: dict = {}
+    for e in entries:
+        sec = (e.section or "General").strip()
+        if sec not in section_map:
+            section_map[sec] = []
+        section_map[sec].append(e)
+
+    for sec in section_map:
+        nid = f"sec::{sec}"
+        nodes.append({
+            "id": nid,
+            "label": sec,
+            "type": "section",
+            "size": 16,
+            "color": "#3b82f6",       # blue
+            "faq_count": len(section_map[sec]),
+        })
+        node_ids.add(nid)
+
+    # ── Intent hub nodes ───────────────────────────────────────────────────
+    intent_counts: dict = {}
+    for t in training:
+        intent_counts[t.intent] = intent_counts.get(t.intent, 0) + 1
+
+    for intent, count in intent_counts.items():
+        nid = f"intent::{intent}"
+        nodes.append({
+            "id": nid,
+            "label": intent.replace("_", " ").title(),
+            "type": "intent",
+            "size": 12,
+            "color": "#a855f7",       # purple
+            "sample_count": count,
+        })
+        node_ids.add(nid)
+
+    # ── FAQ nodes + section edges ──────────────────────────────────────────
+    for e in entries:
+        sec = (e.section or "General").strip()
+        nid = f"faq::{e.id}"
+        nodes.append({
+            "id": nid,
+            "label": e.question[:80],
+            "answer": e.answer[:300],
+            "section": sec,
+            "type": "faq",
+            "size": 7,
+            "color": "#22c55e",       # green (all approved FAQs are trusted)
+            "created_at": e.created_at.isoformat(),
+        })
+        node_ids.add(nid)
+        # Edge: section hub → this FAQ
+        edges.append({"source": f"sec::{sec}", "target": nid, "weight": 1.5})
+
+    # ── Intent → FAQ edges (keyword overlap heuristic) ─────────────────────
+    INTENT_KEYWORDS = {
+        "document_status": ["status", "track", "document", "pdid", "tracking", "where"],
+        "lgu_query":       ["ordinance", "service", "office", "government", "city", "lgu"],
+        "help":            ["help", "assist", "what can", "how to use"],
+        "complaint":       ["complaint", "problem", "issue", "delay", "concern"],
+        "follow_up":       ["follow", "update", "check", "again", "still"],
+    }
+    for e in entries:
+        q_lower = e.question.lower()
+        for intent, keywords in INTENT_KEYWORDS.items():
+            intent_nid = f"intent::{intent}"
+            if intent_nid in node_ids and any(kw in q_lower for kw in keywords):
+                edges.append({"source": intent_nid, "target": f"faq::{e.id}", "weight": 0.5})
+                break  # one intent edge per FAQ max
+
+    return {
+        "success": True,
+        "nodes": nodes,
+        "edges": edges,
+        "stats": {
+            "total_nodes": len(nodes),
+            "total_edges": len(edges),
+            "sections": len(section_map),
+            "faqs": len(entries),
+            "intents": len(intent_counts),
+        },
+    }
 
 
 @router.put("/faq/{faq_id}", response_model=dict)
