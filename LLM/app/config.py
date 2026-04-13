@@ -8,8 +8,8 @@ class Settings(BaseSettings):
 
     # Ollama (local LLM)
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "llama3"
-    OLLAMA_TIMEOUT: int = 60
+    OLLAMA_MODEL: str = "qwen3:9b"
+    OLLAMA_TIMEOUT: int = 90
 
     # Redis Cache
     REDIS_URL: str = "redis://localhost:6379/0"

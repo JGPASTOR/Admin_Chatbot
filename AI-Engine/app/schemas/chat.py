@@ -181,6 +181,7 @@ class FlaggedQueryResponse(BaseModel):
     session_id: Optional[str]
     confidence: float
     topic: Optional[str]
+    flag_type: Optional[str]    # low_confidence | wrong_prompt | missing_info
     asked_at: str
     status: str
     admin_answer: Optional[str]

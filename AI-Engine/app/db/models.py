@@ -69,6 +69,11 @@ class FlaggedQuery(Base):
     session_id = Column(String(36), nullable=True)
     confidence = Column(Float, default=0.0, nullable=False)
     topic = Column(String(20), nullable=True)
+    # flag_type classifies WHY the query was flagged:
+    #   low_confidence  — classifier was unsure (intent == unknown, conf ≥ 0.3)
+    #   wrong_prompt    — very low confidence, likely off-topic / gibberish (conf < 0.3)
+    #   missing_info    — valid intent but no RAG context and no FAQ match (knowledge gap)
+    flag_type = Column(String(20), default="low_confidence", nullable=True)
     asked_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
     status = Column(String(10), default="pending", nullable=False)  # pending | resolved | dismissed
     admin_answer = Column(Text, nullable=True)

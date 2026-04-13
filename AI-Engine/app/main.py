@@ -23,6 +23,19 @@ async def lifespan(app: FastAPI):
 
     # Create database tables if they don't exist
     Base.metadata.create_all(bind=engine)
+
+    # Migrate: add flag_type column if it doesn't exist (safe no-op on re-runs)
+    try:
+        from sqlalchemy import text as _sql_text
+        with engine.connect() as _conn:
+            _conn.execute(_sql_text(
+                "ALTER TABLE flagged_queries ADD COLUMN flag_type VARCHAR(20) DEFAULT 'low_confidence'"
+            ))
+            _conn.commit()
+        print("✅ Migrated: added flag_type column to flagged_queries")
+    except Exception:
+        pass  # Column already exists — normal on every subsequent startup
+
     print("✅ Database tables ready")
 
     # Load ML model

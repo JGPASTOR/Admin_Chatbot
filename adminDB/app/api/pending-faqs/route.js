@@ -50,11 +50,17 @@ export async function POST(request) {
                 const answer = override?.answer?.trim() || p.answer;
                 const section = override?.section?.trim() || p.section;
 
-                // Insert into faq_entries (preserve source document)
-                await conn.query(
-                    'INSERT INTO faq_entries (question, answer, section, doc_id, doc_name) VALUES (?, ?, ?, ?, ?)',
-                    [question, answer, section, p.doc_id ?? null, p.doc_name ?? null]
+                // Skip insert if this question already exists in faq_entries (prevents duplicates)
+                const [existingFaq] = await conn.query(
+                    'SELECT id FROM faq_entries WHERE LOWER(TRIM(question)) = LOWER(TRIM(?)) LIMIT 1',
+                    [question]
                 );
+                if (existingFaq.length === 0) {
+                    await conn.query(
+                        'INSERT INTO faq_entries (question, answer, section, doc_id, doc_name) VALUES (?, ?, ?, ?, ?)',
+                        [question, answer, section, p.doc_id ?? null, p.doc_name ?? null]
+                    );
+                }
 
                 // Mark as approved
                 await conn.query("UPDATE pending_faqs SET status = 'approved' WHERE id = ?", [id]);

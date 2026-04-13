@@ -1,8 +1,11 @@
 import json
+import logging
 import os
 import re
 import io
 import edge_tts
+
+logger = logging.getLogger(__name__)
 from langdetect import detect, detect_langs
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -400,26 +403,29 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
     chunks = _chunk_text(text)
     chunks = [c.strip() for c in chunks if len(c.strip()) >= 120]
 
-    # Take first 15 most informative chunks (avoids LLM timeout on huge docs)
-    selected = chunks[:15]
+    # Take first 25 most informative chunks (avoids LLM timeout on huge docs)
+    selected = chunks[:25]
 
     if not selected:
         return {"success": True, "pairs": [], "total": 0}
 
     llm_url = os.environ.get("LLM_SERVICE_URL", "http://localhost:8001")
-    all_pairs = []
+    all_pairs = []  # each item carries a hidden _source field for the judge step
 
-    system_prompt = (
+    # ── Step 2: Generation — 3 diverse question angles per chunk ──────────────
+    gen_system = (
         "You are an expert FAQ creator for a Philippine local government chatbot (Surigao City). "
-        "Given text excerpts from official government documents, generate specific Q&A pairs "
-        "that citizens would actually ask.\n\n"
+        "Given text excerpts from official government documents, generate EXACTLY 3 diverse Q&A pairs "
+        "per excerpt that citizens would actually ask — using different question angles.\n\n"
         "STRICT RULES:\n"
-        "1. Questions must be fully answerable from the given text — never guess\n"
-        "2. Answers must come DIRECTLY from the text — no invented details\n"
-        "3. Rate each pair confidence 1-10 (9-10=crystal clear, 7-8=good, 5-6=acceptable, 1-4=skip)\n"
-        "4. Generate 1-3 Q&A pairs per chunk, or 0 if the chunk is just a title/header/signature\n"
+        "1. Each of the 3 questions MUST use a different angle — e.g. 'What is X?', 'How do you X?', "
+        "'Who is eligible for X?', 'What are the requirements for X?', 'When does X apply?'\n"
+        "2. Questions must be fully answerable from the given text — never guess\n"
+        "3. Answers must come DIRECTLY from the text — no invented details\n"
+        "4. Rate each pair confidence 1-10 (9-10=crystal clear, 7-8=good, 5-6=acceptable, 1-4=skip)\n"
         "5. Return ONLY a valid JSON array — no markdown, no explanation outside the array\n"
-        "6. If no useful FAQ can be formed from a chunk, do NOT include anything for that chunk"
+        "6. If a chunk is just a title/header/signature with no real content, return []\n"
+        "7. The 3 diverse questions help citizens find answers even when they phrase things differently"
     )
 
     # Process in batches of 3 chunks (keeps prompts within Ollama context window)
@@ -433,12 +439,14 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
         prompt = (
             f"Document: {filename}\n\n"
             f"Text excerpts:\n{numbered}\n\n"
-            f"Generate FAQ pairs as a JSON array. Use this format:\n"
+            f"For EACH excerpt, generate EXACTLY 3 diverse FAQ pairs (different question angles). "
+            f"Return all pairs as a single flat JSON array:\n"
             f'[{{"question": "What are the requirements?", "answer": "The requirements include...", '
             f'"confidence": 8, "section": "Section 1"}}]\n\n'
             f"Rules:\n"
+            f"- 3 pairs per excerpt minimum (unless it has no real content)\n"
+            f"- Use different question words: What, How, Who, When, Why, What are the requirements, etc.\n"
             f"- section field = label from the excerpt (e.g. 'Section 2', 'Eligibility')\n"
-            f"- Return [] if no useful FAQ can be formed\n"
             f"- Return ONLY the JSON array, nothing else"
         )
 
@@ -446,12 +454,11 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
             async with httpx.AsyncClient(timeout=90.0) as client:
                 res = await client.post(
                     f"{llm_url}/api/generate",
-                    json={"prompt": prompt, "system_prompt": system_prompt},
+                    json={"prompt": prompt, "system_prompt": gen_system},
                 )
                 res.raise_for_status()
                 raw = res.json().get("response", "").strip()
 
-                # Extract JSON array — handles markdown code fences too
                 json_match = re.search(r'\[[\s\S]*?\]', raw)
                 if json_match:
                     pairs = json_lib.loads(json_match.group(0))
@@ -471,13 +478,15 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
                                 "answer": a,
                                 "confidence": conf,
                                 "section": str(p.get("section", "")).strip(),
+                                # hidden field — source text for judge step, stripped before returning
+                                "_source": numbered[:1200],
                             })
 
         except Exception as e:
             logger.warning(f"[FAQ Generate] LLM batch {batch_idx // batch_size + 1} failed: {e}")
             continue
 
-    # Deduplicate by lowercased question text
+    # ── Deduplicate by lowercased question text ────────────────────────────────
     seen_q: set = set()
     deduped = []
     for p in all_pairs:
@@ -486,11 +495,87 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
             seen_q.add(key)
             deduped.append(p)
 
-    # Sort by confidence descending, cap at 20 total proposals
-    deduped.sort(key=lambda x: x["confidence"], reverse=True)
-    final = deduped[:20]
+    # ── Step 3: Judge / Self-Correction — verify each pair against source text ─
+    # The judge is a second LLM pass that drops any pair whose answer is not
+    # actually supported by the source chunk (catches hallucinations).
+    judge_system = (
+        "You are a strict fact-checker for a government chatbot. "
+        "Your only job is to verify that each Q&A pair is fully supported by its source text. "
+        "Be strict: if the answer contains ANY detail not found in the source text, mark it 'drop'. "
+        "If the question cannot be answered from the source text alone, mark it 'drop'."
+    )
 
-    logger.info(f"[FAQ Generate] {len(final)} quality pairs generated for '{filename}'")
+    verified_pairs = []
+    judge_batch_size = 5  # verify 5 pairs per judge call
+    for judge_idx in range(0, len(deduped), judge_batch_size):
+        judge_batch = deduped[judge_idx: judge_idx + judge_batch_size]
+        items_text = "\n\n".join(
+            f"[Pair {judge_idx + k + 1}]\n"
+            f'Source text: """{p["_source"][:800]}"""\n'
+            f"Question: {p['question']}\n"
+            f"Answer: {p['answer']}"
+            for k, p in enumerate(judge_batch)
+        )
+        judge_prompt = (
+            f"Review each Q&A pair below. For each, check:\n"
+            f"1. Is the question answerable using ONLY the source text?\n"
+            f"2. Is the answer accurate with no hallucinated details?\n\n"
+            f"{items_text}\n\n"
+            f"Return a JSON array — one object per pair, in order:\n"
+            f'[{{"id": 1, "verdict": "keep", "reason": "answer is directly quoted"}}, '
+            f'{{"id": 2, "verdict": "drop", "reason": "answer adds details not in source"}}]\n'
+            f"verdict must be exactly 'keep' or 'drop'. Return ONLY the JSON array."
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                res = await client.post(
+                    f"{llm_url}/api/generate",
+                    json={"prompt": judge_prompt, "system_prompt": judge_system},
+                )
+                res.raise_for_status()
+                raw = res.json().get("response", "").strip()
+
+                json_match = re.search(r'\[[\s\S]*?\]', raw)
+                if json_match:
+                    verdicts = json_lib.loads(json_match.group(0))
+                    if isinstance(verdicts, list):
+                        # build map: pair number → verdict
+                        verdict_map = {}
+                        for v in verdicts:
+                            if isinstance(v, dict):
+                                verdict_map[int(v.get("id", 0))] = v
+                        for k, p in enumerate(judge_batch):
+                            pair_num = judge_idx + k + 1
+                            vdict = verdict_map.get(pair_num, {})
+                            if vdict.get("verdict", "keep").lower() != "drop":
+                                verified_pairs.append(p)
+                            else:
+                                logger.info(
+                                    f"[FAQ Judge] Dropped: '{p['question'][:60]}' — "
+                                    f"{vdict.get('reason', '')[:80]}"
+                                )
+                    else:
+                        verified_pairs.extend(judge_batch)  # malformed — keep all
+                else:
+                    verified_pairs.extend(judge_batch)  # no JSON — keep all
+
+        except Exception as e:
+            logger.warning(f"[FAQ Judge] Batch {judge_idx // judge_batch_size + 1} failed: {e}")
+            verified_pairs.extend(judge_batch)  # non-blocking — keep all on error
+
+    # Strip internal _source field before returning to caller
+    for p in verified_pairs:
+        p.pop("_source", None)
+
+    # Sort by confidence descending, cap at 40 total proposals
+    verified_pairs.sort(key=lambda x: x["confidence"], reverse=True)
+    final = verified_pairs[:40]
+
+    logger.info(
+        f"[FAQ Generate] '{filename}': {len(deduped)} generated → "
+        f"{len(verified_pairs)} passed judge → {len(final)} returned"
+    )
     return {"success": True, "pairs": final, "total": len(final)}
 
 
@@ -568,7 +653,21 @@ async def faq_create(request: Request, payload: FAQCreateRequest, db: DBSession 
     The bot checks FAQ entries before RAG. When a user's question matches a
     FAQ entry (≥72% semantic similarity), the stored answer is returned directly.
     """
-    from datetime import datetime, timezone
+    # Skip insert if this question already exists (prevents duplicates)
+    existing = db.query(FAQEntry).filter(
+        FAQEntry.question.ilike(payload.question.strip())
+    ).first()
+    if existing:
+        rag_service.add_faq_to_cache(existing.id, existing.question, existing.answer)
+        return {
+            "success": True,
+            "message": "FAQ entry already exists.",
+            "id": existing.id,
+            "question": existing.question,
+            "answer": existing.answer,
+            "section": existing.section,
+        }
+
     entry = FAQEntry(
         question=payload.question,
         answer=payload.answer,
@@ -697,6 +796,7 @@ async def flagged_queries_list(
                 "session_id": e.session_id,
                 "confidence": round(e.confidence, 4),
                 "topic": e.topic,
+                "flag_type": e.flag_type or "low_confidence",
                 "asked_at": e.asked_at.isoformat(),
                 "status": e.status,
                 "admin_answer": e.admin_answer,
@@ -762,6 +862,99 @@ async def flagged_query_resolve(
         "faq_id": faq.id,
         "question": entry.question,
         "answer": payload.answer,
+    }
+
+
+@router.post("/flagged-queries/{query_id}/suggest-answer", response_model=dict)
+@limiter.limit("10/minute")
+async def flagged_query_suggest_answer(
+    request: Request,
+    query_id: int,
+    db: DBSession = Depends(get_db),
+):
+    """
+    Use Qwen3 (via the LLM Service) to auto-generate a suggested answer for a
+    flagged query. Searches the RAG knowledge base first, then asks the model
+    to draft a reply. The suggestion is returned for admin review — nothing is
+    saved automatically.
+
+    Useful for:
+    - missing_info queries: model attempts an answer from available docs
+    - low_confidence queries: model drafts a reply admin can approve/edit
+    - wrong_prompt queries: model explains why it cannot answer
+    """
+    import httpx as _httpx
+
+    entry = db.query(FlaggedQuery).filter(FlaggedQuery.id == query_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Flagged query {query_id} not found.")
+
+    question = entry.question
+    flag_type = entry.flag_type or "low_confidence"
+
+    # Try RAG retrieval for this question so the LLM has context
+    rag_context = None
+    if rag_service.is_ready():
+        rag_context = rag_service.retrieve_context(query=question, top_k=3)
+
+    llm_url = os.environ.get("LLM_SERVICE_URL", "http://localhost:8001")
+
+    if flag_type == "wrong_prompt":
+        system = (
+            "You are a helpful government chatbot assistant. "
+            "The user sent a message that appears off-topic or unclear. "
+            "Politely explain what topics you can help with (document tracking, LGU services) "
+            "and gently ask them to rephrase or clarify."
+        )
+        prompt = f"Off-topic or unclear message received: \"{question}\"\n\nDraft a polite, helpful response."
+    elif rag_context:
+        system = (
+            "You are a government chatbot assistant for Surigao City DTS. "
+            "Answer the citizen's question using ONLY the document excerpts provided. "
+            "Be concise, factual, and helpful. If the excerpts don't fully answer the question, "
+            "say so and suggest contacting the office directly."
+        )
+        prompt = (
+            f"Citizen question: \"{question}\"\n\n"
+            f"--- Document Excerpts ---\n{rag_context}\n--- End of Excerpts ---\n\n"
+            f"Draft a clear, helpful answer based on the excerpts above."
+        )
+    else:
+        system = (
+            "You are a government chatbot assistant for Surigao City DTS. "
+            "The knowledge base has no document excerpts for this question. "
+            "Provide a general helpful response and suggest the citizen contact the office "
+            "or provide their tracking number if applicable."
+        )
+        prompt = (
+            f"Citizen question: \"{question}\"\n\n"
+            f"No document excerpts available. Draft a general helpful response that "
+            f"acknowledges the question and guides the citizen to the right resource."
+        )
+
+    try:
+        async with _httpx.AsyncClient(timeout=90.0) as client:
+            res = await client.post(
+                f"{llm_url}/api/generate",
+                json={"prompt": prompt, "system_prompt": system},
+            )
+            res.raise_for_status()
+            suggested_answer = res.json().get("response", "").strip()
+    except Exception as e:
+        logger.warning(f"[SuggestAnswer] LLM call failed for query {query_id}: {e}")
+        raise HTTPException(status_code=503, detail="LLM Service unavailable. Try again later.")
+
+    if not suggested_answer:
+        raise HTTPException(status_code=502, detail="LLM returned an empty suggestion.")
+
+    return {
+        "success": True,
+        "query_id": query_id,
+        "question": question,
+        "flag_type": flag_type,
+        "suggested_answer": suggested_answer,
+        "rag_used": bool(rag_context),
+        "message": "Review and edit the suggestion, then use the resolve endpoint to save it as a FAQ.",
     }
 
 

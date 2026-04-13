@@ -288,7 +288,7 @@ export async function POST(request) {
                 // ── Rule-based fallback (if LLM failed or returned nothing) ──
                 if (pairs.length === 0) {
                     const chunks = chunkText(docText);
-                    const limited = chunks.slice(0, 30);
+                    const limited = chunks.slice(0, 50);
                     for (const chunk of limited) {
                         const { label, topic } = inferLabel(chunk);
                         const question = makeQuestion(topic, chunk);
@@ -315,12 +315,18 @@ export async function POST(request) {
                             [docId, originalName, pair.section || '', pair.question, pair.answer, status, confidence]
                         );
 
-                        // Auto-approved pairs also go directly to faq_entries
+                        // Auto-approved pairs also go directly to faq_entries (skip if already exists)
                         if (status === 'approved') {
-                            await conn.query(
-                                'INSERT INTO faq_entries (question, answer, section, doc_id, doc_name) VALUES (?, ?, ?, ?, ?)',
-                                [pair.question, pair.answer, pair.section || '', docId, originalName]
+                            const [existingFaq] = await conn.query(
+                                'SELECT id FROM faq_entries WHERE LOWER(TRIM(question)) = LOWER(TRIM(?)) LIMIT 1',
+                                [pair.question]
                             );
+                            if (existingFaq.length === 0) {
+                                await conn.query(
+                                    'INSERT INTO faq_entries (question, answer, section, doc_id, doc_name) VALUES (?, ?, ?, ?, ?)',
+                                    [pair.question, pair.answer, pair.section || '', docId, originalName]
+                                );
+                            }
                             autoApproved++;
                         } else {
                             pendingCount++;

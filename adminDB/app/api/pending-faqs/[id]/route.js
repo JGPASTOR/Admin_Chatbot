@@ -21,10 +21,17 @@ export async function PUT(request, { params }) {
             const finalA = (answer || p.answer).trim();
             const finalS = (section !== undefined ? section : p.section)?.trim() || null;
 
-            await pool.query(
-                'INSERT INTO faq_entries (question, answer, section, doc_id, doc_name) VALUES (?, ?, ?, ?, ?)',
-                [finalQ, finalA, finalS, p.doc_id ?? null, p.doc_name ?? null]
+            // Skip insert if this question already exists (prevents duplicates)
+            const [existingFaq] = await pool.query(
+                'SELECT id FROM faq_entries WHERE LOWER(TRIM(question)) = LOWER(TRIM(?)) LIMIT 1',
+                [finalQ]
             );
+            if (existingFaq.length === 0) {
+                await pool.query(
+                    'INSERT INTO faq_entries (question, answer, section, doc_id, doc_name) VALUES (?, ?, ?, ?, ?)',
+                    [finalQ, finalA, finalS, p.doc_id ?? null, p.doc_name ?? null]
+                );
+            }
             await pool.query("UPDATE pending_faqs SET status = 'approved' WHERE id = ?", [id]);
 
             // Push new entry into AI Engine's in-memory cache

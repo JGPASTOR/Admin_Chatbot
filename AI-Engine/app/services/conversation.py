@@ -52,20 +52,42 @@ def get_or_create_session(db: DBSession, session_id: Optional[str] = None) -> Se
     return new_session
 
 
-def flag_unknown_query(db: DBSession, question: str, session_id: str, confidence: float, topic: Optional[str]):
-    """Save a low-confidence/unknown query to the flagged_queries table for admin review."""
+def flag_unknown_query(
+    db: DBSession,
+    question: str,
+    session_id: str,
+    confidence: float,
+    topic: Optional[str],
+    flag_type: str = "low_confidence",
+):
+    """Save a problematic query to the flagged_queries table for admin review.
+
+    flag_type values:
+      low_confidence  — classifier unsure (intent=unknown, conf ≥ 0.3)
+      wrong_prompt    — very low confidence, likely off-topic/gibberish (conf < 0.3)
+      missing_info    — valid intent but the knowledge base has no answer (RAG gap)
+    """
     try:
+        # Avoid duplicate pending flags for the same question
+        existing = db.query(FlaggedQuery).filter(
+            FlaggedQuery.question == question,
+            FlaggedQuery.status == "pending",
+        ).first()
+        if existing:
+            return
+
         entry = FlaggedQuery(
             question=question,
             session_id=session_id,
             confidence=confidence,
             topic=topic,
+            flag_type=flag_type,
             status="pending",
         )
         db.add(entry)
         db.commit()
     except Exception as e:
-        print(f"[FlaggedQuery] Failed to log unknown query: {e}")
+        print(f"[FlaggedQuery] Failed to log query: {e}")
         db.rollback()
 
 
@@ -258,9 +280,14 @@ async def process_message(
     log_message(db, p.session.id, "user", message, p.intent, p.confidence, p.entities)
     log_message(db, p.session.id, "bot", reply)
 
-    # Safety Net: flag unknown/low-confidence queries for admin review
-    if p.intent == "unknown" and not p.faq_answer and not p.document:
-        flag_unknown_query(db, message, p.session.id, p.confidence, topic)
+    # Safety Net: flag problematic queries for admin review
+    if not p.faq_answer and not p.document:
+        if p.intent == "unknown":
+            _type = "wrong_prompt" if p.confidence < 0.3 else "low_confidence"
+            flag_unknown_query(db, message, p.session.id, p.confidence, topic, flag_type=_type)
+        elif not p.rag_context and topic == "lgu":
+            # Valid intent but knowledge base has no answer — information gap
+            flag_unknown_query(db, message, p.session.id, p.confidence, topic, flag_type="missing_info")
 
     return {
         "reply": reply,
@@ -389,6 +416,10 @@ async def stream_message(
     log_message(db, p.session.id, "user", message, p.intent, p.confidence, p.entities)
     log_message(db, p.session.id, "bot", full_reply)
 
-    # Safety Net: flag unknown/low-confidence queries for admin review
-    if p.intent == "unknown" and not p.faq_answer and not p.document:
-        flag_unknown_query(db, message, p.session.id, p.confidence, topic)
+    # Safety Net: flag problematic queries for admin review
+    if not p.faq_answer and not p.document:
+        if p.intent == "unknown":
+            _type = "wrong_prompt" if p.confidence < 0.3 else "low_confidence"
+            flag_unknown_query(db, message, p.session.id, p.confidence, topic, flag_type=_type)
+        elif not p.rag_context and topic == "lgu":
+            flag_unknown_query(db, message, p.session.id, p.confidence, topic, flag_type="missing_info")

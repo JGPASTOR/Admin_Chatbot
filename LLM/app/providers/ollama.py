@@ -3,12 +3,26 @@ Ollama LLM provider — calls the local Ollama server.
 
 Endpoint: POST {OLLAMA_BASE_URL}/api/generate
 Docs:     https://github.com/ollama/ollama/blob/main/docs/api.md
+
+Note: Qwen3 models may emit <think>...</think> reasoning blocks before the
+actual answer. These are stripped automatically so callers always receive
+clean, user-facing text.
 """
 
+import re
 import httpx
 from typing import Optional
 
 from app.config import settings
+
+
+def _strip_think_tags(text: str) -> str:
+    """
+    Remove Qwen3 chain-of-thought <think>...</think> blocks from a response.
+    The blocks can be multi-line and appear anywhere in the text.
+    """
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
+    return text.strip()
 
 
 async def generate(
@@ -25,7 +39,7 @@ async def generate(
         model:         Override the default model from settings.
 
     Returns:
-        The generated text response.
+        The generated text response (think tags stripped).
 
     Raises:
         httpx.HTTPError:     On connection / HTTP errors.
@@ -37,6 +51,9 @@ async def generate(
         "model": model,
         "prompt": prompt,
         "stream": False,        # get the full response in one shot
+        "options": {
+            "think": False,     # disable Qwen3 thinking mode for faster responses
+        },
     }
 
     if system_prompt:
@@ -55,7 +72,7 @@ async def generate(
     if not text:
         raise Exception("Ollama returned an empty response")
 
-    return text.strip()
+    return _strip_think_tags(text)
 
 
 async def generate_stream(
@@ -66,17 +83,24 @@ async def generate_stream(
     """
     Send a prompt to Ollama and yield the generated text as it streams.
     Returns AsyncGenerator[str, None].
+    Think tags are buffered and stripped before being yielded.
     """
     model = model or settings.OLLAMA_MODEL
 
     payload = {
         "model": model,
         "prompt": prompt,
-        "stream": True,  # stream tokens as they arrive
+        "stream": True,         # stream tokens as they arrive
+        "options": {
+            "think": False,     # disable Qwen3 thinking mode
+        },
     }
 
     if system_prompt:
         payload["system"] = system_prompt
+
+    buffer = ""  # accumulate tokens to catch cross-chunk <think> blocks
+    in_think = False
 
     async with httpx.AsyncClient(timeout=settings.OLLAMA_TIMEOUT) as client:
         async with client.stream("POST", f"{settings.OLLAMA_BASE_URL}/api/generate", json=payload) as response:
@@ -89,8 +113,25 @@ async def generate_stream(
                     chunk = json.loads(line)
                     token = chunk.get("response", "")
                     if token:
-                        yield token
+                        buffer += token
+                        # Toggle think-block suppression
+                        if "<think>" in buffer.lower():
+                            in_think = True
+                        if in_think and "</think>" in buffer.lower():
+                            in_think = False
+                            # Flush everything after the closing tag
+                            after = re.split(r"</think>", buffer, maxsplit=1, flags=re.IGNORECASE)[-1]
+                            buffer = after
+                            if buffer.strip():
+                                yield buffer
+                                buffer = ""
+                        elif not in_think and not buffer.lower().startswith("<think"):
+                            yield buffer
+                            buffer = ""
                     if chunk.get("done"):
+                        # Flush any remaining buffered text
+                        if buffer.strip() and not in_think:
+                            yield _strip_think_tags(buffer)
                         break
                 except json.JSONDecodeError:
                     continue
