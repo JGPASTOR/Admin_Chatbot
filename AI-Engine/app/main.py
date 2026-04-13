@@ -50,6 +50,41 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass  # Columns already exist
 
+    # Migrate: add admin_answer + resolved_at to flagged_queries (safe no-op on re-runs)
+    for col_sql in [
+        "ALTER TABLE flagged_queries ADD COLUMN admin_answer TEXT DEFAULT NULL",
+        "ALTER TABLE flagged_queries ADD COLUMN resolved_at DATETIME DEFAULT NULL",
+    ]:
+        try:
+            from sqlalchemy import text as _sql_text
+            with engine.connect() as _conn:
+                _conn.execute(_sql_text(col_sql))
+                _conn.commit()
+        except Exception:
+            pass  # Column already exists
+
+    # Migrate: create faq_history table if not yet present (safe no-op on re-runs)
+    try:
+        from sqlalchemy import text as _sql_text
+        with engine.connect() as _conn:
+            _conn.execute(_sql_text(
+                "CREATE TABLE IF NOT EXISTS faq_history ("
+                "  id INT AUTO_INCREMENT PRIMARY KEY,"
+                "  faq_id INT NOT NULL,"
+                "  change_type VARCHAR(20) NOT NULL,"
+                "  changed_by VARCHAR(100) DEFAULT NULL,"
+                "  question TEXT DEFAULT NULL,"
+                "  answer TEXT DEFAULT NULL,"
+                "  section VARCHAR(255) DEFAULT NULL,"
+                "  changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                "  FOREIGN KEY (faq_id) REFERENCES faq_entries(id) ON DELETE CASCADE"
+                ")"
+            ))
+            _conn.commit()
+        print("✅ Migrated: faq_history table ensured")
+    except Exception:
+        pass  # Already exists
+
     print("✅ Database tables ready")
 
     # Load ML model

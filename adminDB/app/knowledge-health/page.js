@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 import Header from '../../components/Header';
 
 // ── constants ──────────────────────────────────────────────────────────────
-const AI_ENGINE_URL = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000';
+const HEALTH_API = '/api/admin/knowledge-health';
 
 const METRIC_CONFIG = {
     faq_coverage_rate:      { label: 'FAQ Coverage Rate',        target: 60,   unit: '%',  higher: true,  icon: '🎯', desc: '% of queries answered by FAQ cache' },
@@ -144,7 +144,7 @@ export default function KnowledgeHealthPage() {
         setLoading(true);
         setError(null);
         try {
-            const res = await fetch(`${AI_ENGINE_URL}/api/admin/knowledge-health?days=${days}`);
+            const res = await fetch(`${HEALTH_API}?days=${days}`);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const json = await res.json();
             setData(json);
@@ -219,7 +219,7 @@ export default function KnowledgeHealthPage() {
                         borderRadius: 12, padding: '16px 20px', marginBottom: 24,
                         color: '#dc2626', fontSize: 13,
                     }}>
-                        ⚠️ {error} — Check that the AI Engine is running at <code>{AI_ENGINE_URL}</code>
+                        ⚠️ {error} — Check that the AI Engine is running
                     </div>
                 )}
 

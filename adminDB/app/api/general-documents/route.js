@@ -331,7 +331,7 @@ export async function POST(request) {
                         const chunks = chunkText(_docText);
                         for (const chunk of chunks.slice(0, 30)) {
                             const { label, topic } = inferLabel(chunk);
-                            pairs.push({ question: makeQuestion(topic, chunk), answer: chunk, confidence: 5, section: label });
+                            pairs.push({ question: makeQuestion(topic, chunk), answer: chunk, confidence: 0, section: label });
                         }
                         console.log(`[Auto-FAQ] Rule-based fallback: ${pairs.length} proposals for '${originalName}'.`);
                     }
