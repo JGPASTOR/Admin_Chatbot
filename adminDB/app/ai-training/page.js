@@ -59,6 +59,9 @@ export default function AITrainingPage() {
     // Rebuild
     const [rebuilding, setRebuilding] = useState(false);
 
+    // Delete document
+    const [deletingDoc, setDeletingDoc] = useState(null);
+
     // Flash messages
     const [flash, setFlash] = useState('');
     const [flashErr, setFlashErr] = useState('');
@@ -118,9 +121,12 @@ export default function AITrainingPage() {
             const res = await fetch('/api/general-documents', { method: 'POST', body: fd });
             const json = await res.json();
             if (json.success) {
-                setUploadMsg(`"${file.name}" uploaded! Keywords extracted + FAQ proposals generated.`);
-                loadDocs(); loadPending(); loadStats();
-                setTimeout(() => setUploadMsg(''), 5000);
+                setUploadMsg(`"${file.name}" uploaded! Qwen3 is generating FAQ proposals in the background — refresh Pending Proposals in ~2 minutes.`);
+                loadDocs(); loadStats();
+                setTimeout(() => setUploadMsg(''), 12000);
+                // Poll for proposals after a delay to auto-refresh when ready
+                setTimeout(() => { loadPending(); loadStats(); }, 30000);
+                setTimeout(() => { loadPending(); loadStats(); }, 90000);
             } else {
                 showFlash(json.error || 'Upload failed.', true);
                 setUploadMsg('');
@@ -231,6 +237,28 @@ export default function AITrainingPage() {
             loadPending(); loadStats();
         } catch { /* */ }
         setWorking(false);
+    };
+
+    // ── Delete document ──
+    const handleDeleteDoc = async (doc) => {
+        if (!confirm(`Delete "${doc.original_name}"?\n\nThis will also remove its pending FAQ proposals and RAG index entries.`)) return;
+        setDeletingDoc(doc.id);
+        try {
+            const res = await fetch('/api/general-documents', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: doc.id }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                showFlash(data.message);
+                if (expandedDoc === doc.id) setExpandedDoc(null);
+                loadDocs(); loadPending(); loadStats();
+            } else {
+                showFlash(data.error || 'Delete failed.', true);
+            }
+        } catch (err) { showFlash(err.message, true); }
+        setDeletingDoc(null);
     };
 
     // ── Rebuild RAG ──
@@ -366,12 +394,21 @@ export default function AITrainingPage() {
                                                     </div>
                                                 </div>
                                             </div>
-                                            <button
-                                                onClick={() => setExpandedDoc(expandedDoc === doc.id ? null : doc.id)}
-                                                style={{ ...btn('#64748b'), padding: '5px 12px' }}
-                                            >
-                                                {expandedDoc === doc.id ? 'Hide Keywords' : 'Show Keywords'}
-                                            </button>
+                                            <div style={{ display: 'flex', gap: 8 }}>
+                                                <button
+                                                    onClick={() => setExpandedDoc(expandedDoc === doc.id ? null : doc.id)}
+                                                    style={{ ...btn('#64748b'), padding: '5px 12px' }}
+                                                >
+                                                    {expandedDoc === doc.id ? 'Hide Keywords' : 'Show Keywords'}
+                                                </button>
+                                                <button
+                                                    onClick={() => handleDeleteDoc(doc)}
+                                                    disabled={deletingDoc === doc.id}
+                                                    style={{ ...btn('#dc2626', deletingDoc === doc.id), padding: '5px 12px' }}
+                                                >
+                                                    {deletingDoc === doc.id ? 'Deleting…' : 'Delete'}
+                                                </button>
+                                            </div>
                                         </div>
 
                                         {expandedDoc === doc.id && (

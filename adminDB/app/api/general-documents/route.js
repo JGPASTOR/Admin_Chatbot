@@ -177,6 +177,44 @@ async function parseFile(buffer, ext) {
 const UPLOAD_DIR = path.join(process.cwd(), 'public', 'uploads');
 const MAX_SIZE = 30 * 1024 * 1024; // 30 MB
 
+/* ── DELETE — remove a document by id ── */
+export async function DELETE(request) {
+    try {
+        const { id } = await request.json();
+        if (!id) return NextResponse.json({ success: false, error: 'id is required.' }, { status: 400 });
+
+        // Fetch file info before deleting
+        const [rows] = await pool.query('SELECT filename, original_name FROM general_documents WHERE id = ?', [id]);
+        if (rows.length === 0) return NextResponse.json({ success: false, error: 'Document not found.' }, { status: 404 });
+        const { filename, original_name } = rows[0];
+
+        // Delete from DB (cascade: pending_faqs reference doc_id but we'll clean those too)
+        await pool.query('DELETE FROM general_documents WHERE id = ?', [id]);
+        await pool.query('DELETE FROM pending_faqs WHERE doc_id = ?', [id]);
+
+        // Delete file from disk (non-fatal)
+        try {
+            const filePath = path.join(UPLOAD_DIR, filename);
+            await fs.unlink(filePath);
+        } catch { /* file may not exist */ }
+
+        // Notify AI Engine to remove from RAG index (non-fatal)
+        const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
+        try {
+            await fetch(`${aiEngineUrl}/api/rag/delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: original_name }),
+                signal: AbortSignal.timeout(8000),
+            });
+        } catch { /* non-fatal */ }
+
+        return NextResponse.json({ success: true, message: `"${original_name}" deleted.` });
+    } catch (err) {
+        return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+    }
+}
+
 /* ── GET — list all general documents ── */
 export async function GET() {
     try {
@@ -251,102 +289,96 @@ export async function POST(request) {
             console.warn('[Keywords] Failed to extract keywords:', kwErr.message);
         }
 
-        // ── Auto-generate pending FAQ proposals (LLM-powered) ──
-        try {
-            let docText = '';
-            if (extractedData?.text) {
-                docText = cleanDocText(extractedData.text);
-            } else if (extractedData?.sheets) {
-                docText = Object.entries(extractedData.sheets)
-                    .map(([name, rows]) => `${name}:\n${rows.map(r => r.join('\t')).join('\n')}`)
-                    .join('\n\n').trim();
-            }
+        // ── Auto-generate FAQ proposals — FIRE AND FORGET (non-blocking) ──
+        // Upload returns immediately. Qwen3 generation runs in background (~2-4 min).
+        // Admin refreshes the Pending Proposals tab after a moment to see results.
+        const _docText = (() => {
+            if (extractedData?.text) return cleanDocText(extractedData.text);
+            if (extractedData?.sheets) return Object.entries(extractedData.sheets)
+                .map(([name, rows]) => `${name}:\n${rows.map(r => r.join('\t')).join('\n')}`)
+                .join('\n\n').trim();
+            return '';
+        })();
 
-            if (docText) {
-                const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
-                let pairs = [];
+        if (_docText) {
+            const _aiUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
 
-                // ── Try LLM-powered generation first ──
+            (async () => {
                 try {
-                    const faqRes = await fetch(`${aiEngineUrl}/api/faq/generate`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ text: docText, filename: originalName }),
-                        signal: AbortSignal.timeout(120_000), // 2 min — LLM needs time
-                    });
-                    if (faqRes.ok) {
-                        const faqData = await faqRes.json();
-                        if (faqData.success && Array.isArray(faqData.pairs) && faqData.pairs.length > 0) {
-                            pairs = faqData.pairs;
-                            console.log(`[Auto-FAQ] LLM generated ${pairs.length} pairs for '${originalName}'.`);
-                        }
-                    }
-                } catch (llmErr) {
-                    console.warn('[Auto-FAQ] LLM unavailable, using rule-based fallback:', llmErr.message);
-                }
+                    let pairs = [];
 
-                // ── Rule-based fallback (if LLM failed or returned nothing) ──
-                if (pairs.length === 0) {
-                    const chunks = chunkText(docText);
-                    const limited = chunks.slice(0, 50);
-                    for (const chunk of limited) {
-                        const { label, topic } = inferLabel(chunk);
-                        const question = makeQuestion(topic, chunk);
-                        pairs.push({ question, answer: chunk, confidence: 5, section: label });
-                    }
-                    console.log(`[Auto-FAQ] Rule-based fallback: ${pairs.length} proposals for '${originalName}'.`);
-                }
-
-                // ── Store proposals + auto-approve high-confidence ones ──
-                const conn = await pool.getConnection();
-                try {
-                    let autoApproved = 0;
-                    let pendingCount = 0;
-
-                    for (const pair of pairs) {
-                        const confidence = Number(pair.confidence ?? 5);
-                        // confidence >= 8 → auto-approve (goes directly to faq_entries, no manual review)
-                        // confidence 5-7 → pending (admin reviews)
-                        const status = confidence >= 8 ? 'approved' : 'pending';
-
-                        await conn.query(
-                            `INSERT INTO pending_faqs (doc_id, doc_name, section, question, answer, status, confidence_score)
-                             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                            [docId, originalName, pair.section || '', pair.question, pair.answer, status, confidence]
-                        );
-
-                        // Auto-approved pairs also go directly to faq_entries (skip if already exists)
-                        if (status === 'approved') {
-                            const [existingFaq] = await conn.query(
-                                'SELECT id FROM faq_entries WHERE LOWER(TRIM(question)) = LOWER(TRIM(?)) LIMIT 1',
-                                [pair.question]
-                            );
-                            if (existingFaq.length === 0) {
-                                await conn.query(
-                                    'INSERT INTO faq_entries (question, answer, section, doc_id, doc_name) VALUES (?, ?, ?, ?, ?)',
-                                    [pair.question, pair.answer, pair.section || '', docId, originalName]
-                                );
+                    // ── Try Qwen3-powered generation (up to 5 min) ──
+                    try {
+                        const faqRes = await fetch(`${_aiUrl}/api/faq/generate`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ text: _docText, filename: originalName }),
+                            signal: AbortSignal.timeout(300_000), // 5 min for Qwen3:9b
+                        });
+                        if (faqRes.ok) {
+                            const faqData = await faqRes.json();
+                            if (faqData.success && Array.isArray(faqData.pairs) && faqData.pairs.length > 0) {
+                                pairs = faqData.pairs;
+                                console.log(`[Auto-FAQ] Qwen3 generated ${pairs.length} pairs for '${originalName}'.`);
                             }
-                            autoApproved++;
-                        } else {
-                            pendingCount++;
                         }
+                    } catch (llmErr) {
+                        console.warn('[Auto-FAQ] LLM unavailable, falling back to rule-based:', llmErr.message);
                     }
 
-                    console.log(`[Auto-FAQ] '${originalName}': ${autoApproved} auto-approved, ${pendingCount} pending review.`);
-
-                    // Notify AI Engine to reload FAQ cache if anything was auto-approved
-                    if (autoApproved > 0) {
-                        try {
-                            await fetch(`${aiEngineUrl}/api/faq`, { signal: AbortSignal.timeout(5000) });
-                        } catch { /* non-fatal */ }
+                    // ── Rule-based fallback ──
+                    if (pairs.length === 0) {
+                        const chunks = chunkText(_docText);
+                        for (const chunk of chunks.slice(0, 30)) {
+                            const { label, topic } = inferLabel(chunk);
+                            pairs.push({ question: makeQuestion(topic, chunk), answer: chunk, confidence: 5, section: label });
+                        }
+                        console.log(`[Auto-FAQ] Rule-based fallback: ${pairs.length} proposals for '${originalName}'.`);
                     }
-                } finally {
-                    conn.release();
+
+                    // ── Store proposals + auto-approve high-confidence ones ──
+                    const conn = await pool.getConnection();
+                    try {
+                        let autoApproved = 0;
+                        for (const pair of pairs) {
+                            const confidence = Number(pair.confidence ?? 5);
+                            const status = confidence >= 8 ? 'approved' : 'pending';
+
+                            await conn.query(
+                                `INSERT INTO pending_faqs (doc_id, doc_name, section, question, answer, status, confidence_score)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                                [docId, originalName, pair.section || '', pair.question, pair.answer, status, confidence]
+                            );
+
+                            if (status === 'approved') {
+                                const [ex] = await conn.query(
+                                    'SELECT id FROM faq_entries WHERE LOWER(TRIM(question)) = LOWER(TRIM(?)) LIMIT 1',
+                                    [pair.question]
+                                );
+                                if (ex.length === 0) {
+                                    await conn.query(
+                                        'INSERT INTO faq_entries (question, answer, section, doc_id, doc_name) VALUES (?, ?, ?, ?, ?)',
+                                        [pair.question, pair.answer, pair.section || '', docId, originalName]
+                                    );
+                                }
+                                // Push each auto-approved FAQ to AI Engine cache
+                                fetch(`${_aiUrl}/api/faq`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ question: pair.question, answer: pair.answer, section: pair.section || null }),
+                                    signal: AbortSignal.timeout(5000),
+                                }).catch(() => {});
+                                autoApproved++;
+                            }
+                        }
+                        console.log(`[Auto-FAQ] '${originalName}': ${autoApproved} auto-approved, ${pairs.length - autoApproved} pending review.`);
+                    } finally {
+                        conn.release();
+                    }
+                } catch (err) {
+                    console.warn('[Auto-FAQ] Background generation failed:', err.message);
                 }
-            }
-        } catch (faqErr) {
-            console.warn('[Auto-FAQ] Failed to generate proposals:', faqErr.message);
+            })(); // fire and forget — no await
         }
 
         // ── Forward extracted text to AI Engine RAG pipeline (non-blocking) ──

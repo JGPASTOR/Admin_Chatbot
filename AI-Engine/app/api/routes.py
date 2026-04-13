@@ -409,7 +409,7 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
 
     chunks = _chunk_text(text)
     chunks = [c.strip() for c in chunks if len(c.strip()) >= 120]
-    selected = chunks[:30]  # up to 30 chunks per doc
+    selected = chunks[:12]  # cap at 12 chunks — keeps total LLM time under 3 min
 
     if not selected:
         return {"success": True, "pairs": [], "total": 0}
@@ -417,58 +417,41 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
     llm_url = os.environ.get("LLM_SERVICE_URL", "http://localhost:8001")
     all_pairs = []
 
-    # ── Step 1: Generation — 1 answer + primary + related + variations per chunk ─
+    # ── Step 1: One chunk at a time — 1 primary + 2 variations per chunk ──────
+    # Keeping output small (3 Q&A per chunk) makes qwen3:9b respond in ~15-25s.
+    # 12 chunks × ~20s = ~4 min total, well within the caller's timeout.
     gen_system = (
         "You are a training data generator for a Philippine local government chatbot (Surigao City DTS). "
-        "Your job is to read a text excerpt and produce one canonical answer plus MANY questions that lead to it.\n\n"
-        "WHY: The chatbot uses semantic similarity to match user questions to stored Q&A pairs. "
-        "More question variations = higher chance of matching, even when users phrase things differently.\n\n"
-        "FOR EACH EXCERPT produce:\n"
-        "  • primary   — the most direct, natural question a citizen would ask\n"
-        "  • related   — 3 questions about adjacent or follow-up topics in the same excerpt\n"
-        "  • variations — 4 different ways a citizen might ask the PRIMARY question\n"
-        "All questions must share ONE canonical answer derived directly from the text.\n\n"
-        "CONFIDENCE RUBRIC (be accurate — do not default to the middle):\n"
-        "  10  — answer is a verbatim quote or exact numbered fact from the text\n"
-        "  8-9 — answer is clearly and fully stated in the text, zero ambiguity\n"
-        "  6-7 — answer is derivable from text with minor synthesis\n"
-        "  4-5 — answer is implied but not explicitly written\n"
-        "  1-3 — answer requires guessing or is NOT in the text\n\n"
-        "OUTPUT FORMAT — a flat JSON array where each entry has:\n"
-        '  {"question": "...", "answer": "...", "confidence": <int>, '
-        '"section": "...", "question_type": "primary|related|variation"}\n\n'
-        "STRICT RULES:\n"
-        "1. All questions for the same excerpt MUST share the exact same answer string\n"
-        "2. Variations must rephrase the primary, NOT introduce new facts\n"
-        "3. Related questions may cover different parts of the same excerpt\n"
-        "4. Never invent details not found in the text\n"
-        "5. If the excerpt is just a header/signature with no real content, return []\n"
-        "6. Return ONLY the JSON array — no markdown, no explanation"
+        "Read the excerpt and produce ONE canonical answer plus question variations citizens might use.\n\n"
+        "Output per excerpt:\n"
+        "  • 1 primary question  — the most direct question a citizen would ask\n"
+        "  • 2 variation questions — different ways to ask the same thing (rephrase only)\n"
+        "All 3 questions share the SAME answer.\n\n"
+        "CONFIDENCE RULES — score how well the answer is supported by the text:\n"
+        "  10  — answer is a VERBATIM QUOTE or exact numbered fact from the text\n"
+        "  8-9 — answer is CLEARLY AND FULLY stated in the text with no ambiguity\n"
+        "        *** MOST CHUNKS WITH REAL CONTENT SHOULD SCORE 8 OR 9 ***\n"
+        "  7   — answer requires combining 2-3 sentences from the text\n"
+        "  5-6 — answer is only partially covered by the text\n"
+        "  1-4 — answer is NOT in the text → return [] for this chunk\n\n"
+        "IMPORTANT: Do NOT default to 5. If the text clearly contains the answer, score 8 or 9. "
+        "Reserve 5-6 only when the text is vague or incomplete.\n\n"
+        "Return ONLY a valid JSON array:\n"
+        '[{"question":"...","answer":"...","confidence":8,"section":"...","question_type":"primary|variation"}]\n'
+        "Rules: never invent details, return [] for header-only or signature-only chunks, no markdown outside the array."
     )
 
-    # Process 2 chunks per batch (larger output per chunk needs more context window)
-    batch_size = 2
-    for batch_idx in range(0, len(selected), batch_size):
-        batch = selected[batch_idx: batch_idx + batch_size]
-        numbered = "\n\n---\n\n".join(
-            f"[Excerpt {batch_idx + j + 1}]:\n{c}" for j, c in enumerate(batch)
-        )
-
+    for idx, chunk in enumerate(selected):
         prompt = (
             f"Document: {filename}\n\n"
-            f"Text excerpts:\n{numbered}\n\n"
-            f"For EACH excerpt above, generate:\n"
-            f"  • 1 primary question + canonical answer\n"
-            f"  • 3 related questions (same answer)\n"
-            f"  • 4 variation questions (same answer, different phrasing of the primary)\n\n"
-            f"That is ~8 entries per excerpt. All sharing ONE answer per excerpt.\n\n"
-            f"section field = the section label from the excerpt (e.g. 'Section 2', 'Eligibility', etc.)\n"
-            f"question_type = 'primary', 'related', or 'variation'\n\n"
-            f"Return ONLY the flat JSON array."
+            f"Excerpt {idx + 1}:\n{chunk}\n\n"
+            f"Generate 3 entries (1 primary + 2 variations) sharing ONE answer derived from the excerpt above.\n"
+            f"If the excerpt has clear factual content, the confidence MUST be 8 or 9.\n"
+            f"section = section label found in the excerpt (e.g. 'Section 2', 'Eligibility').\n"
+            f"Return ONLY the JSON array."
         )
-
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 res = await client.post(
                     f"{llm_url}/api/generate",
                     json={"prompt": prompt, "system_prompt": gen_system},
@@ -492,21 +475,20 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
                             except (ValueError, TypeError):
                                 conf = 5
                             if conf < 4:
-                                continue  # discard evidently unsupported pairs
+                                continue
                             all_pairs.append({
                                 "question": q,
                                 "answer": a,
                                 "confidence": conf,
                                 "section": str(p.get("section", "")).strip(),
                                 "question_type": str(p.get("question_type", "primary")).strip(),
-                                "_source": numbered[:1500],
+                                "_source": chunk[:1000],
                             })
-
         except Exception as e:
-            logger.warning(f"[FAQ Generate] Batch {batch_idx // batch_size + 1} failed: {e}")
+            logger.warning(f"[FAQ Generate] Chunk {idx + 1} failed: {e}")
             continue
 
-    # ── Deduplicate by lowercased question ────────────────────────────────────
+    # ── Deduplicate ───────────────────────────────────────────────────────────
     seen_q: set = set()
     deduped = []
     for p in all_pairs:
@@ -515,69 +497,53 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
             seen_q.add(key)
             deduped.append(p)
 
-    # ── Step 2: Judge — verify each pair's answer is supported by source text ──
+    # ── Step 2: Judge — verify answers against source text ────────────────────
     judge_system = (
-        "You are a strict fact-checker for a government chatbot. "
-        "Verify that each Q&A pair's answer is fully supported by its source text. "
-        "Mark 'drop' if the answer adds ANY detail not in the source, or if it cannot "
-        "be answered from the source alone. Mark 'keep' only when the answer is clearly grounded."
+        "You are a strict fact-checker. Mark 'drop' if the answer adds details not in the source "
+        "or cannot be answered from the source alone. Otherwise mark 'keep'."
     )
 
     verified_pairs = []
-    judge_batch_size = 6
+    judge_batch_size = 8
     for judge_idx in range(0, len(deduped), judge_batch_size):
         judge_batch = deduped[judge_idx: judge_idx + judge_batch_size]
         items_text = "\n\n".join(
-            f"[Pair {judge_idx + k + 1}] ({p.get('question_type','primary')})\n"
-            f'Source: """{p["_source"][:800]}"""\n'
-            f"Q: {p['question']}\n"
-            f"A: {p['answer']}"
+            f"[{judge_idx + k + 1}] Q: {p['question']}\nA: {p['answer']}\nSource: {p['_source'][:500]}"
             for k, p in enumerate(judge_batch)
         )
         judge_prompt = (
-            f"Review each Q&A pair. For each:\n"
-            f"1. Is the answer fully supported by the source text?\n"
-            f"2. Does it add any invented details?\n\n"
-            f"{items_text}\n\n"
-            f'Return JSON array: [{{"id": 1, "verdict": "keep"}}, {{"id": 2, "verdict": "drop"}}]\n'
-            f"verdict = 'keep' or 'drop' only. Return ONLY the JSON array."
+            f"Review each Q&A pair below.\n\n{items_text}\n\n"
+            f'Return: [{{"id":1,"verdict":"keep"}},{{"id":2,"verdict":"drop"}}]\n'
+            f"Return ONLY the JSON array."
         )
-
         try:
-            async with httpx.AsyncClient(timeout=90.0) as client:
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 res = await client.post(
                     f"{llm_url}/api/generate",
                     json={"prompt": judge_prompt, "system_prompt": judge_system},
                 )
                 res.raise_for_status()
                 raw = res.json().get("response", "").strip()
-
                 json_match = re.search(r'\[[\s\S]*?\]', raw)
                 if json_match:
                     verdicts = json_lib.loads(json_match.group(0))
                     if isinstance(verdicts, list):
                         verdict_map = {int(v.get("id", 0)): v for v in verdicts if isinstance(v, dict)}
                         for k, p in enumerate(judge_batch):
-                            pair_num = judge_idx + k + 1
-                            vdict = verdict_map.get(pair_num, {})
-                            if vdict.get("verdict", "keep").lower() != "drop":
+                            if verdict_map.get(judge_idx + k + 1, {}).get("verdict", "keep").lower() != "drop":
                                 verified_pairs.append(p)
-                            else:
-                                logger.info(f"[FAQ Judge] Dropped: '{p['question'][:60]}'")
                     else:
                         verified_pairs.extend(judge_batch)
                 else:
                     verified_pairs.extend(judge_batch)
-
         except Exception as e:
             logger.warning(f"[FAQ Judge] Batch {judge_idx // judge_batch_size + 1} failed: {e}")
             verified_pairs.extend(judge_batch)
 
-    # Strip internal field, sort by confidence, return all (no arbitrary cap)
     for p in verified_pairs:
         p.pop("_source", None)
 
-    verified_pairs.sort(key=lambda x: (x["confidence"], x.get("question_type") == "primary"), reverse=True)
+    verified_pairs.sort(key=lambda x: x["confidence"], reverse=True)
 
     logger.info(
         f"[FAQ Generate] '{filename}': {len(all_pairs)} raw → "
@@ -588,8 +554,7 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
         "pairs": verified_pairs,
         "total": len(verified_pairs),
         "breakdown": {
-            "primary": sum(1 for p in verified_pairs if p.get("question_type") == "primary"),
-            "related": sum(1 for p in verified_pairs if p.get("question_type") == "related"),
+            "primary":   sum(1 for p in verified_pairs if p.get("question_type") == "primary"),
             "variation": sum(1 for p in verified_pairs if p.get("question_type") == "variation"),
         },
     }

@@ -34,27 +34,46 @@ export default function NeedsReviewPage() {
     useEffect(() => { load(); }, [load]);
 
     const resolve = async (id) => {
-        const answer = answerDrafts[id]?.trim();
+        const answer = (answerDrafts[id] || '').trim();
         if (!answer) { showToast('Please write an answer before resolving.', 'error'); return; }
         setResolving(id);
         try {
+            const section = (sectionDrafts[id] || '').trim() || null;
+            const entry   = entries.find(e => e.id === id);
+
             const res = await fetch(`/api/flagged-queries/${id}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ answer, section: sectionDrafts[id] || null }),
+                body: JSON.stringify({ answer, section }),
             });
             const data = await res.json();
+
             if (data.success) {
+                // Also save to Admin DB faq_entries so knowledge graph shows it
+                try {
+                    await fetch('/api/faq', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ question: entry?.question, answer, section }),
+                    });
+                } catch { /* non-fatal */ }
+
                 showToast('Resolved! Answer added to bot FAQ memory.');
                 setEntries(prev => prev.filter(e => e.id !== id));
                 setAnswerDrafts(prev => { const d = { ...prev }; delete d[id]; return d; });
                 setSectionDrafts(prev => { const d = { ...prev }; delete d[id]; return d; });
                 setExpandedId(null);
             } else {
-                showToast(data.detail || 'Failed to resolve.', 'error');
+                // data.detail can be a string or FastAPI validation array — always stringify
+                const msg = typeof data.detail === 'string'
+                    ? data.detail
+                    : Array.isArray(data.detail)
+                        ? data.detail.map(e => e.msg || String(e)).join(', ')
+                        : (data.error || 'Failed to resolve.');
+                showToast(msg, 'error');
             }
         } catch {
-            showToast('Network error.', 'error');
+            showToast('Network error — check AI Engine connection.', 'error');
         } finally {
             setResolving(null);
         }
