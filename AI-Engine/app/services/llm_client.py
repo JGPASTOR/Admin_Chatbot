@@ -104,9 +104,11 @@ async def generate_llm_response_stream(
             f"{lang_instruction} "
             "When document excerpts are provided in the user prompt, your ONLY job is to answer "
             "the user's question using EXCLUSIVELY that data. "
+            "Answer ONLY what the user specifically asked — do NOT list or explain neighbouring "
+            "topics or items that appear in the excerpts but were not asked about. "
             "Do NOT say you cannot help. Do NOT ask for a Tracking Number. "
             "Do NOT make up information not found in the excerpts. "
-            "Respond concisely with what you find."
+            "Respond concisely and stay strictly on topic."
         )
     else:
         system_prompt = (
@@ -197,12 +199,13 @@ def _build_prompt(
 
             return (
                 f"The user asked: \"{question}\"\n\n"
-                f"Use ONLY the following excerpts from our official knowledge base and uploaded documents to answer."
+                f"Answer ONLY what the user specifically asked about. "
+                f"The excerpts below may contain related or neighbouring topics — ignore anything not directly relevant to the question."
                 f"{section_hint} "
                 f"Do NOT make up information not found below. If the answer isn't in the excerpts, "
                 f"say so politely and suggest they contact the DTS office.\n\n"
                 f"--- Document Excerpts ---\n{rag_context}\n--- End of Excerpts ---\n\n"
-                f"Provide a clear, concise, and helpful answer based on the above."
+                f"Give a focused, direct answer about what was asked. Do not list or explain other topics even if they appear in the excerpts."
             )
         else:
             return (

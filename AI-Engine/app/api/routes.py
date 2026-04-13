@@ -584,7 +584,7 @@ async def faq_generate_llm(request: Request, payload: FAQSuggestRequest):
 
     chunks = _chunk_text(text)
     chunks = [c.strip() for c in chunks if len(c.strip()) >= 120]
-    selected = chunks[:12]  # cap at 12 chunks — keeps total LLM time under 3 min
+    selected = chunks[:40]  # cap at 40 chunks (~120 questions max per document)
 
     if not selected:
         return {"success": True, "pairs": [], "total": 0}
@@ -984,7 +984,10 @@ async def faq_create(request: Request, payload: FAQCreateRequest, db: DBSession 
         }
 
     # ── Semantic dedup (Phase-2) ───────────────────────────────────────────────
-    if await is_duplicate_faq(payload.question.strip()):
+    # NOTE: threshold raised to 0.97 (near-exact only) so that question VARIATIONS
+    # (different phrasings of the same answer) are all stored in ChromaDB.
+    # Variations are intentionally ~0.85–0.92 similar — blocking them breaks FAQ recall.
+    if await is_duplicate_faq(payload.question.strip(), threshold=0.97):
         return {
             "success": False,
             "message": "A semantically similar FAQ already exists. Skipped to prevent duplicates.",
@@ -1368,17 +1371,28 @@ async def flagged_query_resolve(
     if entry.status != "pending":
         raise HTTPException(status_code=400, detail=f"Query is already {entry.status}.")
 
-    # Save to FAQ entries so the bot learns this answer
-    faq = FAQEntry(
-        question=entry.question,
-        answer=payload.answer,
-        section=payload.section,
-    )
-    db.add(faq)
-    db.flush()  # Get the new FAQ id before commit
+    # Check if this question is already in faq_entries (e.g. approved from pending_faqs earlier)
+    faq = db.query(FAQEntry).filter(
+        FAQEntry.question.ilike(entry.question.strip())
+    ).first()
 
-    # Phase 4 closed-loop: Write an audit trace that this FAQ emerged from a user query
-    _write_faq_history(db, faq, "created", "admin (via resolved query)")
+    if faq is None:
+        # New question — create the FAQ entry
+        faq = FAQEntry(
+            question=entry.question,
+            answer=payload.answer,
+            section=payload.section,
+        )
+        db.add(faq)
+        db.flush()  # Get the new FAQ id before commit
+        _write_faq_history(db, faq, "created", "admin (via resolved query)")
+    else:
+        # Already exists — update the answer if admin provided a different one
+        if payload.answer and faq.answer != payload.answer:
+            faq.answer = payload.answer
+            if payload.section:
+                faq.section = payload.section
+            _write_faq_history(db, faq, "updated", "admin (via resolved query)")
 
     # Mark flagged query as resolved
     entry.status = "resolved"
@@ -1387,7 +1401,7 @@ async def flagged_query_resolve(
     db.commit()
     db.refresh(faq)
 
-    # Hot-load the original question into the FAQ cache immediately
+    # Hot-load into FAQ cache (upsert — safe even if already cached)
     rag_service.add_faq_to_cache(faq.id, faq.question, faq.answer)
 
     # Generate question variants in the background (non-blocking)

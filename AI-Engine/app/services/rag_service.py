@@ -251,6 +251,19 @@ def _get_faq_collection():
 
 def _embed(texts: List[str]) -> List[List[float]]:
     """Encode texts to embeddings using the sentence-transformer model."""
+    import os
+    import httpx
+    
+    emb_url = os.environ.get("EMBEDDING_SERVICE_URL", "")
+    if emb_url:
+        try:
+            res = httpx.post(f"{emb_url.rstrip('/')}/embed", json={"texts": texts, "normalize": True}, timeout=30)
+            res.raise_for_status()
+            return res.json().get("embeddings", [])
+        except Exception as e:
+            logger.error(f"[RAG] Fast embedding service failed: {e}")
+            raise RuntimeError(f"[RAG] Embedding microservice failed: {e}")
+            
     global _embedding_model
     if _embedding_model is None:
         raise RuntimeError("[RAG] Embedding model not loaded. Call initialize_rag() first.")
@@ -371,9 +384,15 @@ def initialize_rag(api_url: str, store_dir: str) -> None:
         return
 
     try:
-        # Load embedding model once
-        from sentence_transformers import SentenceTransformer
-        _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+        import os
+        emb_url = os.environ.get("EMBEDDING_SERVICE_URL", "")
+        if emb_url:
+            logger.info(f"[RAG] Phase 3: Utilizing Embedding Microservice at {emb_url}")
+            _embedding_model = True # Mocking because we're using external service
+        else:
+            # Load embedding model once locally
+            from sentence_transformers import SentenceTransformer
+            _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
         # Connect to ChromaDB and build index if empty
         _build_index_from_api(api_url)
@@ -423,7 +442,11 @@ def rebuild_index() -> int:
         all_chunks.extend(doc_chunks)
         all_filenames.extend([original_name] * len(doc_chunks))
 
-    if _embedding_model is None:
+    import os
+    emb_url = os.environ.get("EMBEDDING_SERVICE_URL", "")
+    if emb_url:
+        _embedding_model = True
+    elif _embedding_model is None:
         from sentence_transformers import SentenceTransformer
         _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -882,8 +905,10 @@ def faq_lookup(query: str) -> Optional[str]:
     Check if the query semantically matches any curated FAQ question.
     Returns the stored answer if similarity >= FAQ_THRESHOLD, else None.
 
-    Section-number guard: if the query mentions "section N", only FAQ entries
-    whose question also mentions "section N" are eligible.
+    Section-number handling: if the query mentions "section N", entries whose
+    question also mentions "section N" get a +0.10 boost; entries that mention
+    a *different* section get a -0.15 penalty. No hard-skip — avoids missing
+    FAQs whose question text doesn't include the section number explicitly.
     """
     if _embedding_model is None:
         return None
@@ -904,9 +929,14 @@ def faq_lookup(query: str) -> Optional[str]:
         if not results["metadatas"] or not results["metadatas"][0]:
             return None
 
-        # Section-number guard
+        # Section-number guard (soft — penalises mismatches, does NOT hard-skip)
+        # Hard-skipping caused FAQs without "Section N" in the question text to be
+        # completely invisible even when the user explicitly asked about that section.
         section_match = re.search(r'\bsection\s+(\d+)\b', query.lower())
         query_section_num = section_match.group(1) if section_match else None
+
+        best_answer = None
+        best_score = -1.0
 
         for meta, distance in zip(results["metadatas"][0], results["distances"][0]):
             similarity = 1.0 - distance  # cosine distance → similarity
@@ -914,14 +944,26 @@ def faq_lookup(query: str) -> Optional[str]:
             if similarity < FAQ_THRESHOLD:
                 continue
 
+            # Apply a soft penalty (-0.15) when the user specified a section number
+            # but the FAQ question doesn't mention it, rather than skipping outright.
             if query_section_num is not None:
                 faq_question = meta.get("question", "")
                 faq_section = re.search(r'\bsection\s+(\d+)\b', faq_question.lower())
-                if not faq_section or faq_section.group(1) != query_section_num:
-                    continue
+                if faq_section and faq_section.group(1) == query_section_num:
+                    similarity += 0.10  # boost exact section match
+                elif faq_section:
+                    similarity -= 0.15  # penalise wrong section
 
-            logger.info(f"[FAQ] Match found (score={similarity:.3f}) for query: '{query[:60]}'")
-            return meta.get("answer", "")
+            if similarity < FAQ_THRESHOLD:
+                continue
+
+            if similarity > best_score:
+                best_score = similarity
+                best_answer = meta.get("answer", "")
+
+        if best_answer is not None:
+            logger.info(f"[FAQ] Match found (score={best_score:.3f}) for query: '{query[:60]}'")
+            return best_answer
 
         return None
     except Exception as e:

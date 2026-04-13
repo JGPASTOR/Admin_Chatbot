@@ -39,7 +39,6 @@ export default function NeedsReviewPage() {
         setResolving(id);
         try {
             const section = (sectionDrafts[id] || '').trim() || null;
-            const entry   = entries.find(e => e.id === id);
 
             const res = await fetch(`/api/flagged-queries/${id}`, {
                 method: 'PATCH',
@@ -49,15 +48,6 @@ export default function NeedsReviewPage() {
             const data = await res.json();
 
             if (data.success) {
-                // Also save to Admin DB faq_entries so knowledge graph shows it
-                try {
-                    await fetch('/api/faq', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ question: entry?.question, answer, section }),
-                    });
-                } catch { /* non-fatal */ }
-
                 showToast('Resolved! Answer added to bot FAQ memory.');
                 setEntries(prev => prev.filter(e => e.id !== id));
                 setAnswerDrafts(prev => { const d = { ...prev }; delete d[id]; return d; });
