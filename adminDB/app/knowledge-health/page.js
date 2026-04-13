@@ -1,6 +1,6 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
-import Header from '../../../components/Header';
+import Header from '../../components/Header';
 
 // ── constants ──────────────────────────────────────────────────────────────
 const AI_ENGINE_URL = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000';
