@@ -67,14 +67,15 @@ export async function POST(request) {
                 approved++;
 
                 // Push into AI Engine's in-memory cache immediately
+                // Generous timeout — embedding service can take 10-20 s on first call
                 try {
                     await fetch(`${aiUrl}/api/faq`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ question, answer, section: section || null }),
-                        signal: AbortSignal.timeout(5000),
+                        signal: AbortSignal.timeout(20000),
                     });
-                } catch { /* non-fatal */ }
+                } catch { /* non-fatal — FAQ is already in MySQL; bot caches it on next startup */ }
             }
 
             return NextResponse.json({ success: true, approved });

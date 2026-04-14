@@ -42,35 +42,10 @@ router = APIRouter(prefix="/api", tags=["AI Engine"])
 
 async def is_duplicate_faq(new_question: str, threshold: float = 0.85) -> bool:
     """
-    Semantic deduplication guard — returns True if *new_question* is already
-    covered by an existing FAQ entry in ChromaDB.
-
-    Thresholds (from improvement plan):
-      >= 0.85  → very likely duplicate  → skip insert
-      0.70–0.85 → possibly related      → caller may flag for review
-      < 0.70   → unique question        → safe to insert
+    Semantic deduplication guard — delegates to rag_service.is_faq_duplicate.
+    Kept as an async wrapper so existing callers (faq_create, etc.) don't need changes.
     """
-    try:
-        faq_col = rag_service._get_faq_collection()
-        if faq_col.count() == 0:
-            return False
-
-        emb = rag_service._embed([new_question])
-        results = faq_col.query(
-            query_embeddings=emb,
-            n_results=min(5, faq_col.count()),
-            include=["distances"],
-        )
-        if results["distances"] and results["distances"][0]:
-            best_sim = 1.0 - results["distances"][0][0]  # cosine dist → similarity
-            if best_sim >= threshold:
-                logger.info(
-                    f"[DedupFAQ] Duplicate detected (sim={best_sim:.3f}) for: '{new_question[:60]}'"
-                )
-                return True
-    except Exception as e:
-        logger.warning(f"[DedupFAQ] Check failed: {e}")
-    return False
+    return rag_service.is_faq_duplicate(new_question, threshold)
 
 
 def _lexical_overlap_ok(answer: str, source_chunk: str, min_ratio: float = 0.70) -> bool:
@@ -966,7 +941,7 @@ async def faq_suggest(request: Request, payload: FAQSuggestRequest):
 
 @router.post("/faq", response_model=dict)
 @limiter.limit("30/minute")
-async def faq_create(request: Request, payload: FAQCreateRequest, db: DBSession = Depends(get_db)):
+async def faq_create(request: Request, payload: FAQCreateRequest, background_tasks: BackgroundTasks, db: DBSession = Depends(get_db)):
     """
     Save a curated Q&A pair to the database and immediately load it into
     the in-memory FAQ cache so the bot can use it without restarting.
@@ -980,7 +955,10 @@ async def faq_create(request: Request, payload: FAQCreateRequest, db: DBSession 
         FAQEntry.question.ilike(payload.question.strip())
     ).first()
     if existing:
-        rag_service.add_faq_to_cache(existing.id, existing.question, existing.answer)
+        # Ensure the cache is warm for this entry (runs in background — never blocks)
+        background_tasks.add_task(
+            rag_service.add_faq_to_cache, existing.id, existing.question, existing.answer
+        )
         return {
             "success": True,
             "message": "FAQ entry already exists.",
@@ -992,12 +970,11 @@ async def faq_create(request: Request, payload: FAQCreateRequest, db: DBSession 
         }
 
     # ── Semantic dedup (Phase-2) ───────────────────────────────────────────────
-    # NOTE: threshold raised to 0.97 (near-exact only) so that question VARIATIONS
-    # (different phrasings of the same answer) are all stored in ChromaDB.
-    # Variations are intentionally ~0.85–0.92 similar — blocking them breaks FAQ recall.
-    if await is_duplicate_faq(payload.question.strip(), threshold=0.97):
+    # Threshold 0.92: catch near-identical re-submissions while allowing genuine
+    # phrasings (0.65–0.91) to coexist as variant coverage.
+    if await is_duplicate_faq(payload.question.strip(), threshold=0.92):
         return {
-            "success": False,
+            "success": True,
             "message": "A semantically similar FAQ already exists. Skipped to prevent duplicates.",
             "duplicate": True,
         }
@@ -1016,8 +993,13 @@ async def faq_create(request: Request, payload: FAQCreateRequest, db: DBSession 
     db.commit()
     db.refresh(entry)
 
-    # Hot-load into the in-memory cache so it's available immediately
-    rag_service.add_faq_to_cache(entry.id, entry.question, entry.answer)
+    # Hot-load into FAQ cache in the background (never blocks the API response)
+    background_tasks.add_task(
+        rag_service.add_faq_to_cache, entry.id, entry.question, entry.answer
+    )
+
+    # Generate question variants in background so short/varied queries also match
+    background_tasks.add_task(_generate_and_store_faq_variants, entry.id, entry.question, entry.answer)
 
     return {
         "success": True,
@@ -1051,6 +1033,35 @@ async def faq_list(request: Request, db: DBSession = Depends(get_db)):
             for e in entries
         ],
     )
+
+
+@router.post("/faq/{faq_id}/generate-variants", response_model=dict)
+@limiter.limit("10/minute")
+async def faq_generate_variants(
+    request: Request,
+    faq_id: int,
+    background_tasks: BackgroundTasks,
+    db: DBSession = Depends(get_db),
+):
+    """
+    Admin endpoint: re-generate question variants for an existing FAQ entry.
+
+    Variants are alternate phrasings (short, medium, long) of the canonical question
+    stored in ChromaDB so that users asking in different ways still get the right answer.
+    This runs in the background — returns immediately.
+    """
+    entry = db.query(FAQEntry).filter(FAQEntry.id == faq_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"FAQ id={faq_id} not found.")
+
+    background_tasks.add_task(_generate_and_store_faq_variants, entry.id, entry.question, entry.answer)
+
+    return {
+        "success": True,
+        "message": f"Variant generation queued for FAQ id={faq_id}. Variants will be ready in ~30s.",
+        "faq_id": faq_id,
+        "question": entry.question,
+    }
 
 
 @router.get("/knowledge-graph", response_model=dict)
@@ -1319,40 +1330,12 @@ async def flagged_queries_count(request: Request, db: DBSession = Depends(get_db
 
 def _generate_and_store_faq_variants(faq_id: int, question: str, answer: str) -> None:
     """
-    Background task: ask the LLM to rephrase the resolved question into
-    3 natural variations, then store each one in the FAQ ChromaDB collection.
-    This broadens the semantic matching so the bot answers re-phrased versions
-    of the same question correctly on the first try.
+    Background task: generate 4 alternate question phrasings via LLM and store them
+    in the FAQ ChromaDB collection so short/varied user queries also match this FAQ.
+    Delegates to rag_service.store_faq_variants_sync to avoid duplicated LLM logic.
     """
-    import httpx
-
     llm_url = os.environ.get("LLM_SERVICE_URL", "http://localhost:8001")
-    system = (
-        "You generate alternative phrasings of a question. "
-        "Return ONLY a JSON array of 3 short question strings — no explanation, no markdown. "
-        "Example: [\"How do I apply?\", \"What is the application process?\", \"Steps to apply?\"]"
-    )
-    prompt = (
-        f"Original question: {question}\n\n"
-        "Write 3 natural rephrasing variants of this question that have the same meaning. "
-        "Return a JSON array of exactly 3 strings."
-    )
-    try:
-        res = httpx.post(
-            f"{llm_url}/api/generate",
-            json={"prompt": prompt, "system_prompt": system},
-            timeout=45,
-        )
-        res.raise_for_status()
-        raw = res.json().get("response", "").strip()
-        # Strip markdown code fences if present
-        raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("` \n")
-        variants = json.loads(raw)
-        if isinstance(variants, list):
-            variants = [str(v).strip() for v in variants if v and str(v).strip()]
-            rag_service.add_faq_question_variants(faq_id, variants, answer)
-    except Exception as e:
-        logger.warning(f"[ResolveVariants] Failed to generate variants for FAQ {faq_id}: {e}")
+    rag_service.store_faq_variants_sync(faq_id, question, answer, llm_url, n=4)
 
 
 @router.patch("/flagged-queries/{query_id}/resolve", response_model=dict)
@@ -1409,8 +1392,11 @@ async def flagged_query_resolve(
     db.commit()
     db.refresh(faq)
 
-    # Hot-load into FAQ cache (upsert — safe even if already cached)
-    rag_service.add_faq_to_cache(faq.id, faq.question, faq.answer)
+    # Hot-load into FAQ cache in the background (never blocks the response — embedding
+    # service can take 10-30 s when warming up, which would blow the proxy timeout)
+    background_tasks.add_task(
+        rag_service.add_faq_to_cache, faq.id, faq.question, faq.answer
+    )
 
     # Generate question variants in the background (non-blocking)
     background_tasks.add_task(

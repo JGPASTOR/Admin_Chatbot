@@ -35,15 +35,16 @@ export async function PUT(request, { params }) {
             await pool.query("UPDATE pending_faqs SET status = 'approved' WHERE id = ?", [id]);
 
             // Push new entry into AI Engine's in-memory cache
+            // Use a generous timeout — embedding service can take 10-20 s when warming up
             try {
                 const aiUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
                 await fetch(`${aiUrl}/api/faq`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ question: finalQ, answer: finalA, section: finalS }),
-                    signal: AbortSignal.timeout(5000),
+                    signal: AbortSignal.timeout(20000),
                 });
-            } catch { /* non-fatal — bot picks it up on next restart */ }
+            } catch { /* non-fatal — FAQ is already in MySQL; bot caches it on next startup */ }
 
             return NextResponse.json({ success: true, action: 'approved' });
         }

@@ -12,7 +12,7 @@ export async function PATCH(request, { params }) {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
-            signal: AbortSignal.timeout(8000),
+            signal: AbortSignal.timeout(30000),
         });
         const data = await res.json();
         return NextResponse.json(data, { status: res.status });

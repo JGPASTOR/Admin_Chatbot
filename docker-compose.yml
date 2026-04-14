@@ -88,7 +88,7 @@ services:
       - DATABASE_URL=mysql+pymysql://dts_user:dts_pass@db:3306/documenttracker
       - DTS_API_BASE_URL=http://admin:3005
       - DTS_MOCK_MODE=false
-      - CORS_ORIGINS=http://localhost,http://localhost:3005
+      - CORS_ORIGINS=http://localhost,http://localhost:3005,http://127.0.0.1:3005,http://192.168.160.118,http://192.168.160.118:3005,http://192.168.160.118:8000
       - HOST=0.0.0.0
       - PORT=8000
       - USE_LLM=true
