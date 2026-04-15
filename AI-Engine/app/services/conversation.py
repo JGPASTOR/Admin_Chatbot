@@ -277,10 +277,16 @@ async def _run_pipeline(
     # (like "HOW ABOUT [name]?") also search RAG instead of being treated as PDID replies.
     if rag_context:
         update_session_context(db, session, "pending_intent", None)
-        # Reclassify follow_up/help to lgu_query when RAG found results in LGU mode.
-        # Do NOT reclassify document_status — explicit tracking requests must ask for PDID.
+        # Reclassify follow_up/help/unknown to lgu_query or tourism_query when RAG found
+        # results in LGU mode.  Do NOT reclassify document_status — explicit tracking
+        # requests must ask for PDID.
         if intent in ("follow_up", "help", "unknown") and "pdid" not in entities and not document and topic == "lgu":
-            intent = "lgu_query"
+            # If the original message looks tourism-related, keep it as tourism_query
+            _tourism_kw = {"tourist", "tourism", "spot", "beach", "island", "festival", "visit", "attraction", "resort", "travel"}
+            if any(kw in message.lower() for kw in _tourism_kw):
+                intent = "tourism_query"
+            else:
+                intent = "lgu_query"
     elif intent == "document_status" and "pdid" not in entities and not document:
         update_session_context(db, session, "pending_intent", "document_status")
 
@@ -383,7 +389,7 @@ async def process_message(
     # future similar questions are served instantly (no Ollama call needed).
     # Only for general-services questions (lgu_query / follow_up with RAG).
     if (used_llm and p.rag_context and reply and len(reply) > 50
-            and p.intent in ("lgu_query", "follow_up", "unknown")):
+            and p.intent in ("lgu_query", "tourism_query", "follow_up", "unknown")):
         asyncio.create_task(_auto_cache_faq(message, reply))
 
     # Safety Net: flag problematic queries for admin review
@@ -537,7 +543,7 @@ async def stream_message(
 
     # Auto-cache: persist successful RAG-grounded LLM answers so future asks skip Ollama
     if (used_llm and p.rag_context and full_reply and len(full_reply) > 50
-            and p.intent in ("lgu_query", "follow_up", "unknown")):
+            and p.intent in ("lgu_query", "tourism_query", "follow_up", "unknown")):
         asyncio.create_task(_auto_cache_faq(message, full_reply))
 
     # Safety Net: flag problematic queries for admin review

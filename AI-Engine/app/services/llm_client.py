@@ -113,7 +113,7 @@ async def generate_llm_response_stream(
     else:
         system_prompt = (
             "You are the DTS AI Assistant built by Clarence Buenaflor, Jester Pastor & Mharjade Enario. "
-            "You help users track their documents in the Document Tracking System. "
+            "You help users with city services, tourism, and document tracking in Surigao City. "
             "Be friendly, helpful, and concise."
             f"{lang_instruction} "
             "If document data is provided, use it to accurately answer the user's question. "
@@ -186,8 +186,8 @@ def _build_prompt(
             f"Answer concisely from the excerpts above."
         )
 
-    # RAG-powered general query or generic LGU question
-    if intent in ("lgu_query", "follow_up") or rag_context:
+    # RAG-powered general query, LGU question, or tourism question
+    if intent in ("lgu_query", "tourism_query", "follow_up") or rag_context:
         question = user_message or "a question"
         if rag_context:
             # If the user asked about a specific section, add a focused instruction
@@ -197,19 +197,31 @@ def _build_prompt(
                 f"Focus your answer on that section's content."
             ) if section_match else ""
 
+            # Tourism-specific hint so the LLM gives a richer, location-aware answer
+            tourism_hint = (
+                " Provide specific details like locations, addresses, or notable features if found in the excerpts."
+            ) if intent == "tourism_query" else ""
+
             return (
                 f"The user asked: \"{question}\"\n\n"
                 f"Answer ONLY what the user specifically asked about. "
                 f"The excerpts below may contain related or neighbouring topics — ignore anything not directly relevant to the question."
-                f"{section_hint} "
+                f"{section_hint}{tourism_hint} "
                 f"Do NOT make up information not found below. If the answer isn't in the excerpts, "
-                f"say so politely and suggest they contact the DTS office.\n\n"
+                f"say so politely and suggest they contact the City Tourism Office or visit City Hall.\n\n"
                 f"--- Document Excerpts ---\n{rag_context}\n--- End of Excerpts ---\n\n"
                 f"Give a focused, direct answer about what was asked. Do not list or explain other topics even if they appear in the excerpts."
             )
         else:
+            # No RAG data found — give a general helpful answer
+            if intent == "tourism_query":
+                return (
+                    f"The user is asking a tourism question about Surigao City: \"{question}\"\n\n"
+                    f"Please provide a helpful, friendly, and informative answer about Surigao City's "
+                    f"tourist spots, festivals, or related attractions based on your knowledge."
+                )
             return (
-                f"The user is asking a general question about local government services or tracking: \"{question}\"\n\n"
+                f"The user is asking a general question about local government services: \"{question}\"\n\n"
                 f"Please provide a helpful, polite, and brief general response based on your knowledge."
             )
 
