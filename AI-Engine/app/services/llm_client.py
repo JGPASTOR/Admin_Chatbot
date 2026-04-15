@@ -51,11 +51,11 @@ async def generate_llm_response(
     lang_instruction = " Respond in Filipino (Tagalog)." if language == "tl" else ""
     system_prompt = (
         "You are the DTS AI Assistant built by Clarence Buenaflor, Jester Pastor & Mharjade Enario. "
-        "You help users track their documents in the Document Tracking System. "
-        "Be friendly, helpful, and concise."
+        "You assist with document tracking and answering questions STRICTLY from the data provided in the prompt. "
         f"{lang_instruction} "
-        "If document data is provided, use it to accurately answer the user's question. "
-        "Do NOT hallucinate document statuses — only use the data provided."
+        "Do NOT answer from your own training knowledge. "
+        "Do NOT make up city services, LGU programs, tourism info, or document statuses. "
+        "Only use information explicitly given to you in the prompt."
     )
 
     try:
@@ -113,11 +113,11 @@ async def generate_llm_response_stream(
     else:
         system_prompt = (
             "You are the DTS AI Assistant built by Clarence Buenaflor, Jester Pastor & Mharjade Enario. "
-            "You help users with city services, tourism, and document tracking in Surigao City. "
-            "Be friendly, helpful, and concise."
+            "You assist with document tracking in Surigao City's Document Tracking System. "
             f"{lang_instruction} "
-            "If document data is provided, use it to accurately answer the user's question. "
-            "Do NOT hallucinate document statuses — only use the data provided."
+            "Do NOT answer questions about city services, LGU programs, tourism, or any topic "
+            "that requires a knowledge base — only answer from data explicitly provided in the prompt. "
+            "If no data is provided, tell the user you don't have that information and suggest they visit City Hall."
         )
 
     try:
@@ -163,17 +163,13 @@ def _build_prompt(
         return None
 
     if intent == "help":
-        return (
-            "The user is asking for help or what you can do. Briefly explain that you "
-            "can help them track documents if they provide a Tracking Number (PDID)."
-        )
+        # Use the pre-built help template — LLM adds no value and may stray into
+        # answering general knowledge questions about city services.
+        return None
 
     if intent == "complaint":
-        return (
-            "The user is expressing a complaint or frustration. Be empathetic, apologize "
-            "for any inconvenience, and suggest they visit the DTS office or provide their "
-            "Tracking No. so you can check on it."
-        )
+        # Use the pre-built complaint template — no knowledge base needed.
+        return None
 
     # Handle follow_up that has no PDID — if RAG context found, treat it as a knowledge search.
     # This handles "HOW ABOUT [name]?" style queries mid-conversation.
@@ -213,16 +209,8 @@ def _build_prompt(
                 f"Give a focused, direct answer about what was asked. Do not list or explain other topics even if they appear in the excerpts."
             )
         else:
-            # No RAG data found — give a general helpful answer
-            if intent == "tourism_query":
-                return (
-                    f"The user is asking a tourism question about Surigao City: \"{question}\"\n\n"
-                    f"Please provide a helpful, friendly, and informative answer about Surigao City's "
-                    f"tourist spots, festivals, or related attractions based on your knowledge."
-                )
-            return (
-                f"The user is asking a general question about local government services: \"{question}\"\n\n"
-                f"Please provide a helpful, polite, and brief general response based on your knowledge."
-            )
+            # No RAG data found — do NOT answer from the LLM's own knowledge.
+            # Return None so the template handler shows a proper "no info" message.
+            return None
 
     return None

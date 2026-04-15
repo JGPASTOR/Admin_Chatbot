@@ -98,6 +98,7 @@ services:
       - LLM_SERVICE_URL=http://llm:8001
       - USE_RAG=true
       - RAG_DOCUMENT_API_URL=http://admin:3005/api/general-documents
+      - LOCATIONS_API_URL=http://admin:3005/api/locations
       - CONFIDENCE_THRESHOLD=0.4
       - RAG_TOP_K=3
       # ChromaDB vector database connection

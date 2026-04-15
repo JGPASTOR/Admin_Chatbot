@@ -316,6 +316,109 @@ def _fetch_all_from_api(list_api_url: str) -> list:
         raise
 
 
+# ── Location Sync ─────────────────────────────────────────────────────────────
+
+def _location_to_text(loc: dict) -> str:
+    """Convert a location row (from /api/locations) to a searchable text blob."""
+    cat_label = {
+        "restaurant": "Restaurant",
+        "shop": "Shop / Store",
+        "tourist_spot": "Tourist Spot",
+        "hotel": "Hotel / Accommodation",
+        "hospital": "Hospital / Clinic",
+        "government": "Government Office",
+        "school": "School / University",
+        "other": "Place of Interest",
+    }.get(loc.get("category", ""), "Place")
+
+    lines = [f"{cat_label}: {loc['name']}"]
+    if loc.get("category"):
+        lines.append(f"Type: {cat_label}")
+    if loc.get("address"):
+        lines.append(f"Address: {loc['address']}")
+    if loc.get("description"):
+        lines.append(f"About: {loc['description']}")
+    if loc.get("contact"):
+        lines.append(f"Contact: {loc['contact']}")
+    if loc.get("operating_hours"):
+        lines.append(f"Operating Hours: {loc['operating_hours']}")
+    if loc.get("latitude") and loc.get("longitude"):
+        lines.append(f"Coordinates: {loc['latitude']}, {loc['longitude']}")
+    if loc.get("google_maps_url"):
+        lines.append(f"Map: {loc['google_maps_url']}")
+    return "\n".join(lines)
+
+
+def _ingest_locations_from_api(locations_api_url: str) -> int:
+    """
+    Fetch all locations from the Admin API and ingest them into ChromaDB.
+
+    Skips any location whose filename chunk already exists in the collection
+    so this is safe to call multiple times without creating duplicates.
+
+    Returns the total number of new chunks added.
+    """
+    if not locations_api_url:
+        return 0
+
+    try:
+        res = requests.get(locations_api_url, timeout=15)
+        res.raise_for_status()
+        data = res.json()
+    except Exception as e:
+        logger.warning(f"[RAG] Could not fetch locations from {locations_api_url}: {e}")
+        return 0
+
+    rows = data.get("data", [])
+    if not rows:
+        logger.info("[RAG] No locations found in Admin API.")
+        return 0
+
+    collection = _get_rag_collection()
+
+    # Collect filenames already indexed so we don't double-ingest
+    try:
+        existing = collection.get(include=["metadatas"])
+        existing_filenames = {m.get("filename", "") for m in (existing.get("metadatas") or [])}
+    except Exception:
+        existing_filenames = set()
+
+    total_added = 0
+    for loc in rows:
+        loc_id   = loc.get("id", "")
+        loc_name = str(loc.get("name", "unknown")).replace(" ", "_")
+        filename = f"location_{loc_id}_{loc_name}"
+
+        if filename in existing_filenames:
+            logger.debug(f"[RAG] Location '{loc.get('name')}' already indexed — skipping.")
+            continue
+
+        text = _location_to_text(loc)
+        chunks = _chunk_text(text)
+        if not chunks:
+            continue
+
+        base_hash   = hashlib.md5(filename.encode()).hexdigest()[:8]
+        start_count = collection.count()
+        chunk_ids   = [f"{base_hash}_{start_count + i}" for i in range(len(chunks))]
+        embeddings  = _embed(chunks)
+
+        collection.add(
+            ids=chunk_ids,
+            documents=chunks,
+            embeddings=embeddings,
+            metadatas=[
+                {"filename": filename, "section": "General"}
+                for _ in chunks
+            ],
+        )
+        total_added += len(chunks)
+        logger.info(f"[RAG] Ingested location '{loc.get('name')}' — {len(chunks)} chunk(s).")
+
+    logger.info(f"[RAG] Location sync complete. {total_added} new chunk(s) added from {len(rows)} locations.")
+    return total_added
+
+
 # ── Index Build / Load ────────────────────────────────────────────────────────
 
 def _build_index_from_api(api_url: str) -> None:
@@ -370,7 +473,7 @@ def _build_index_from_api(api_url: str) -> None:
 
 # ── Public API (same signatures as before) ────────────────────────────────────
 
-def initialize_rag(api_url: str, store_dir: str) -> None:
+def initialize_rag(api_url: str, store_dir: str, locations_api_url: str = "") -> None:
     """
     Initialize the RAG index at application startup.
     Call this once from main.py lifespan so the index is ready before requests come in.
@@ -396,6 +499,14 @@ def initialize_rag(api_url: str, store_dir: str) -> None:
 
         # Connect to ChromaDB and build index if empty
         _build_index_from_api(api_url)
+
+        # Sync locations (tourist spots, restaurants, shops) — skips already-indexed entries
+        _loc_url = locations_api_url or os.environ.get("LOCATIONS_API_URL", "")
+        if _loc_url:
+            loc_chunks = _ingest_locations_from_api(_loc_url)
+            if loc_chunks:
+                logger.info(f"[RAG] Synced {loc_chunks} location chunk(s) into index.")
+
         _rag_ready = True
         logger.info("[RAG] Initialization complete.")
     except Exception as e:
@@ -468,9 +579,16 @@ def rebuild_index() -> int:
             ],
         )
 
+    # Also re-ingest locations (tourist spots, restaurants, shops)
+    locations_api_url = os.environ.get("LOCATIONS_API_URL", "")
+    loc_chunks = _ingest_locations_from_api(locations_api_url) if locations_api_url else 0
+    if loc_chunks:
+        logger.info(f"[RAG] Rebuild: synced {loc_chunks} location chunk(s).")
+
     _rag_ready = True
-    logger.info(f"[RAG] Rebuild complete. {len(all_chunks)} chunks indexed from {len(doc_list)} documents.")
-    return len(all_chunks)
+    total = len(all_chunks) + loc_chunks
+    logger.info(f"[RAG] Rebuild complete. {total} total chunks ({len(all_chunks)} docs + {loc_chunks} locations).")
+    return total
 
 
 def add_document_to_index(text: str, filename: str = "unknown") -> int:

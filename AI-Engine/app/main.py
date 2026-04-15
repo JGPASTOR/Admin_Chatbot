@@ -107,6 +107,7 @@ async def lifespan(app: FastAPI):
         rag_service.initialize_rag(
             api_url=settings.RAG_DOCUMENT_API_URL,
             store_dir=settings.RAG_STORE_DIR,
+            locations_api_url=settings.LOCATIONS_API_URL,
         )
         if rag_service.is_ready():
             print("✅ RAG knowledge base ready (Synced from Admin API)")

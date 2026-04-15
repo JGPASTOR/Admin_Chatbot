@@ -1469,14 +1469,16 @@ async def flagged_query_suggest_answer(
     else:
         system = (
             "You are a government chatbot assistant for Surigao City DTS. "
-            "The knowledge base has no document excerpts for this question. "
-            "Provide a general helpful response and suggest the citizen contact the office "
-            "or provide their tracking number if applicable."
+            "The knowledge base has NO document excerpts for this question. "
+            "Do NOT answer from your own training knowledge or make up information. "
+            "Inform the citizen that this information is not yet in the knowledge base "
+            "and suggest they visit City Hall or contact the relevant office directly."
         )
         prompt = (
             f"Citizen question: \"{question}\"\n\n"
-            f"No document excerpts available. Draft a general helpful response that "
-            f"acknowledges the question and guides the citizen to the right resource."
+            f"The knowledge base has no information about this. Draft a polite response "
+            f"that tells the citizen this information is not available yet and directs "
+            f"them to visit Surigao City Hall or contact the relevant city office."
         )
 
     try:

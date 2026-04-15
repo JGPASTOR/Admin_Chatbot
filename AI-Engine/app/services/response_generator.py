@@ -315,26 +315,26 @@ _LGU_NO_DATA_RESPONSES = [
 ]
 
 
-# ── Tourism responses ─────────────────────────────────────────────────────────
+# ── Tourism responses (no RAG data found) ────────────────────────────────────
+# Shown only when the RAG index has no matching tourism info.
+# Do NOT hardcode specific spots here — the admin uploads that knowledge.
 _TOURISM_RESPONSES = [
     (
-        "Surigao City is famous for its beautiful islands and beaches! 🌊\n\n"
-        "**Top tourist spots include:**\n"
-        "- 🪨 **Mabua Pebble Beach** — unique stone shoreline\n"
-        "- 🌿 **Day-asan Floating Village** — scenic mangrove community\n"
-        "- 💧 **Songkoy Cold Spring** — refreshing natural spring\n"
-        "- 🏝️ **Island Hopping** — Basul, Silop, and nearby islands\n\n"
-        "It's truly the City of Island Adventures! 🌴"
+        "I don't have specific information about that tourist spot or attraction in my knowledge base yet. 🤔\n\n"
+        "For accurate and up-to-date tourism details, I recommend:\n\n"
+        "- 🏛️ Visiting the **City Tourism Office** at Surigao City Hall\n"
+        "- 📞 Contacting the **City Tourism Office** directly\n\n"
+        "Is there anything else I can help you with?"
     ),
-    "Looking for places to visit in Surigao? You shouldn't miss Mabua Pebble Beach for its unique stone shoreline, the mangrove forests of Day-asan Floating Village, or island hopping around the city. Don't forget to try the local seafood! 🦞",
     (
-        "Surigao City has so much to offer for tourists! 🌴\n\n"
-        "**Must-visit spots:**\n"
-        "- 🪨 **Mabua Pebble Beach** — famous for its natural stone beach\n"
-        "- 🚤 **Island Hopping** — explore the beautiful surrounding islands\n"
-        "- 🌿 **Day-asan Floating Village** — unique floating community on mangroves\n"
-        "- 🎉 **Bonok-Bonok Mardi Gras** — the city's colorful annual festival\n\n"
-        "Would you like to know more about any specific spot?"
+        "I'm sorry, I couldn't find specific information about that in my knowledge base. 😔\n\n"
+        "For tourism inquiries, please contact the **City Tourism Office** or visit **Surigao City Hall** directly.\n\n"
+        "You can also try rephrasing your question — for example, ask about a specific spot by name."
+    ),
+    (
+        "I don't have that information in my knowledge base right now. 🔍\n\n"
+        "For the most accurate tourism details, I recommend reaching out to the **City Tourism Office** at Surigao City Hall.\n\n"
+        "Feel free to ask me another question!"
     ),
 ]
 
