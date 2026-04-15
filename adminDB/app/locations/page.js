@@ -60,6 +60,7 @@ export default function LocationsPage() {
     const [filterCat, setFilterCat] = useState('all');
     const [search, setSearch] = useState('');
     const [deleteConfirm, setDeleteConfirm] = useState(null);
+    const [syncing, setSyncing] = useState(false);
 
     const load = () => {
         setLoading(true);
@@ -150,6 +151,19 @@ export default function LocationsPage() {
         setShowForm(false);
     };
 
+    const handleSyncRAG = async () => {
+        setSyncing(true);
+        try {
+            const res = await fetch('/api/rag/sync-locations', { method: 'POST' });
+            const json = await res.json();
+            if (json.success) showMsg(`✅ RAG synced — ${json.total_chunks ?? 0} new chunk(s) added.`);
+            else showMsg(`❌ Sync failed: ${json.message || 'Unknown error'}`);
+        } catch (err) {
+            showMsg(`❌ Sync failed: ${err.message}`);
+        }
+        setSyncing(false);
+    };
+
     const filtered = locations.filter(l => {
         const matchCat = filterCat === 'all' || l.category === filterCat;
         const q = search.toLowerCase();
@@ -183,20 +197,40 @@ export default function LocationsPage() {
                             Locations added here are indexed in the AI so tourists can ask where to find them, including map links.
                         </p>
                     </div>
-                    {!showForm && (
+                    <div style={{ display: 'flex', gap: 8 }}>
                         <button
-                            onClick={() => setShowForm(true)}
+                            onClick={handleSyncRAG}
+                            disabled={syncing}
+                            title="Re-sync all locations into the AI chatbot knowledge base"
                             style={{
-                                padding: '9px 18px', background: 'var(--primary)', color: '#fff',
-                                border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13,
-                                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+                                padding: '9px 14px', background: syncing ? '#e5e7eb' : '#f0fdf4',
+                                color: syncing ? '#9ca3af' : '#15803d',
+                                border: '1.5px solid ' + (syncing ? '#d1d5db' : '#bbf7d0'),
+                                borderRadius: 8, fontWeight: 600, fontSize: 13,
+                                cursor: syncing ? 'not-allowed' : 'pointer',
+                                display: 'flex', alignItems: 'center', gap: 6,
                             }}>
-                            <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                                <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                            <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"
+                                style={{ animation: syncing ? 'spin 1s linear infinite' : 'none' }}>
+                                <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                             </svg>
-                            Add Location
+                            {syncing ? 'Syncing…' : 'Sync to AI'}
                         </button>
-                    )}
+                        {!showForm && (
+                            <button
+                                onClick={() => setShowForm(true)}
+                                style={{
+                                    padding: '9px 18px', background: 'var(--primary)', color: '#fff',
+                                    border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13,
+                                    cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+                                }}>
+                                <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                                    <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                                </svg>
+                                Add Location
+                            </button>
+                        )}
+                    </div>
                 </div>
 
                 {/* Category summary pills */}
@@ -479,6 +513,7 @@ export default function LocationsPage() {
                     )}
                 </div>
             </main>
+            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
         </>
     );
 }

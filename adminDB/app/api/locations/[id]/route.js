@@ -3,6 +3,25 @@ import { NextResponse } from 'next/server';
 
 const AI_ENGINE = process.env.AI_ENGINE_URL || 'http://192.168.254.110:8000';
 
+/** Trigger a lightweight locations sync on the AI-Engine after any add/edit/delete */
+async function syncLocationsToRAG() {
+    try {
+        const res = await fetch(`${AI_ENGINE}/api/rag/sync-locations`, {
+            method: 'POST',
+            signal: AbortSignal.timeout(30000),
+        });
+        if (!res.ok) {
+            const body = await res.text().catch(() => '');
+            console.warn(`[Locations RAG] Sync returned ${res.status}: ${body}`);
+        } else {
+            const data = await res.json();
+            console.log(`[Locations RAG] Sync OK — ${data.total_chunks ?? 0} new chunk(s)`);
+        }
+    } catch (e) {
+        console.warn('[Locations RAG] Sync failed (AI-Engine unreachable?):', e.message);
+    }
+}
+
 /* ── DELETE /api/locations/[id] ── */
 export async function DELETE(request, { params }) {
     try {
@@ -16,17 +35,13 @@ export async function DELETE(request, { params }) {
         const loc = rows[0];
         const filename = `location_${loc.id}_${loc.name.replace(/\s+/g, '_')}`;
 
-        // Remove from RAG (non-fatal)
-        try {
-            await fetch(`${AI_ENGINE}/api/rag/delete`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename }),
-                signal: AbortSignal.timeout(5000),
-            });
-        } catch (e) {
-            console.warn('[Locations RAG] Delete warning:', e.message);
-        }
+        // Remove chunk from RAG index (non-fatal)
+        fetch(`${AI_ENGINE}/api/rag/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename }),
+            signal: AbortSignal.timeout(5000),
+        }).catch(e => console.warn('[Locations RAG] Delete warning:', e.message));
 
         await pool.query('DELETE FROM locations WHERE id = ?', [id]);
         return NextResponse.json({ success: true, message: 'Location deleted.' });
@@ -68,33 +83,8 @@ export async function PUT(request, { params }) {
 
         const loc = rows[0];
 
-        // Re-ingest updated location to RAG (fire-and-forget)
-        const AI = process.env.AI_ENGINE_URL || 'http://192.168.254.110:8000';
-        const filename = `location_${loc.id}_${loc.name.replace(/\s+/g, '_')}`;
-        const lines = [];
-        const catLabel = {
-            restaurant: 'Restaurant', shop: 'Shop / Store', tourist_spot: 'Tourist Spot',
-            hotel: 'Hotel / Accommodation', hospital: 'Hospital / Clinic',
-            government: 'Government Office', school: 'School / University', other: 'Place of Interest',
-        }[loc.category] ?? 'Place';
-        lines.push(`${catLabel}: ${loc.name}`);
-        if (loc.address) lines.push(`Address: ${loc.address}`);
-        if (loc.description) lines.push(`About: ${loc.description}`);
-        if (loc.contact) lines.push(`Contact: ${loc.contact}`);
-        if (loc.operating_hours) lines.push(`Operating Hours: ${loc.operating_hours}`);
-        if (loc.latitude && loc.longitude) lines.push(`Coordinates: ${loc.latitude}, ${loc.longitude}`);
-        if (loc.google_maps_url) lines.push(`Map: ${loc.google_maps_url}`);
-
-        fetch(`${AI}/api/rag/delete`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filename }), signal: AbortSignal.timeout(5000),
-        }).then(() =>
-            fetch(`${AI}/api/rag/ingest`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename, text: lines.join('\n') }),
-                signal: AbortSignal.timeout(15000),
-            })
-        ).catch(() => {});
+        // Re-sync all locations so the updated entry reflects in RAG (fire-and-forget)
+        syncLocationsToRAG().catch(() => {});
 
         return NextResponse.json({ success: true, data: loc });
     } catch (err) {

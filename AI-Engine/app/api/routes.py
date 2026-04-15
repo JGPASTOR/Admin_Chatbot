@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -504,6 +505,34 @@ async def rag_rebuild(request: Request):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Rebuild failed: {str(e)}")
+
+
+@router.post("/rag/sync-locations", response_model=RagRebuildResponse)
+@limiter.limit("10/minute")
+async def rag_sync_locations(request: Request):
+    """
+    Lightweight sync: re-ingest all locations from the Admin API into ChromaDB.
+    Much faster than a full rebuild — only touches the locations, not documents.
+    Safe to call after adding/editing/deleting a location.
+    """
+    import os
+    try:
+        locations_api_url = os.environ.get("LOCATIONS_API_URL", "")
+        if not locations_api_url:
+            raise HTTPException(status_code=503, detail="LOCATIONS_API_URL not configured.")
+        chunks_added = await asyncio.get_running_loop().run_in_executor(
+            None, rag_service._ingest_locations_from_api, locations_api_url
+        )
+        await rag_service.invalidate_rag_cache()
+        return RagRebuildResponse(
+            success=True,
+            message=f"Locations synced — {chunks_added} new chunk(s) added.",
+            total_chunks=chunks_added,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Location sync failed: {str(e)}")
 
 
 # ── FAQ / Curated Answer Endpoints ────────────────────────────────────────────

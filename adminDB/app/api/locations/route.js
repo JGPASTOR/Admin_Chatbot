@@ -31,24 +31,22 @@ function locationToText(loc) {
     return lines.join('\n');
 }
 
-/** Push location text into RAG via AI-Engine */
-async function ingestToRAG(loc) {
-    const text = locationToText(loc);
-    const filename = `location_${loc.id}_${loc.name.replace(/\s+/g, '_')}`;
+/** Trigger a lightweight locations sync on the AI-Engine after any add/edit/delete */
+async function syncLocationsToRAG() {
     try {
-        const res = await fetch(`${AI_ENGINE}/api/rag/ingest`, {
+        const res = await fetch(`${AI_ENGINE}/api/rag/sync-locations`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filename, text }),
-            signal: AbortSignal.timeout(15000),
+            signal: AbortSignal.timeout(30000),
         });
-        if (!res.ok) console.warn('[Locations RAG] Ingest returned', res.status);
-        else {
+        if (!res.ok) {
+            const body = await res.text().catch(() => '');
+            console.warn(`[Locations RAG] Sync returned ${res.status}: ${body}`);
+        } else {
             const data = await res.json();
-            console.log(`[Locations RAG] Ingested '${loc.name}' — ${data.chunks_added ?? '?'} chunks`);
+            console.log(`[Locations RAG] Sync OK — ${data.total_chunks ?? 0} new chunk(s)`);
         }
     } catch (e) {
-        console.warn('[Locations RAG] Ingest failed:', e.message);
+        console.warn('[Locations RAG] Sync failed (AI-Engine unreachable?):', e.message);
     }
 }
 
@@ -94,8 +92,8 @@ export async function POST(request) {
         const [rows] = await pool.query('SELECT * FROM locations WHERE id = ?', [insertedId]);
         const loc = rows[0];
 
-        // Fire-and-forget RAG ingestion
-        ingestToRAG(loc).catch(() => {});
+        // Fire-and-forget locations sync so the chatbot can find the new entry immediately
+        syncLocationsToRAG().catch(() => {});
 
         return NextResponse.json({ success: true, data: loc }, { status: 201 });
     } catch (err) {
