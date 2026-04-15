@@ -281,18 +281,36 @@ _COMPLAINT_DEFAULT = [
 ]
 
 
-# ── LGU responses ─────────────────────────────────────────────────────────────
-_LGU_RESPONSES = [
-    "The City Government of Surigao is committed to providing efficient, transparent, and responsive public service. For specific inquiries about city ordinances, mayor's office programs, or local government services, you can visit the official Surigao City website or the City Hall.",
-    "Surigao City, known as the 'City of Island Adventures,' is governed by dedicated local officials focused on sustainable development and public welfare. If you need details on specific LGU programs, I recommend contacting the City Information Office.",
+# ── LGU no-data guiding responses ────────────────────────────────────────────
+# Used when intent is lgu_query but no FAQ/RAG data matches the question.
+# These guide the user toward relevant services instead of returning generic copy.
+_LGU_NO_DATA_RESPONSES = [
     (
-        "The Local Government Unit (LGU) of Surigao City offers a wide range of services including:\n\n"
-        "- 📋 **Business Permits & Licensing**\n"
-        "- 🏥 **Health & Social Services**\n"
-        "- 🏗️ **Infrastructure & Public Works**\n"
-        "- 📚 **Education Support Programs**\n"
-        "- 🌿 **Environmental Management**\n\n"
-        "Visit the City Hall or the official Surigao City website for more details."
+        "I don't have specific information about that in my knowledge base yet. 🤔\n\n"
+        "Here's what I **can** help you with in General Services mode:\n\n"
+        "- 📋 **Permits & Requirements** — business permits, clearances, IDs\n"
+        "- 🏛️ **LGU Programs** — city ordinances, mayor's office programs, ELA\n"
+        "- 📍 **Tourism** — tourist spots, festivals, island hopping\n"
+        "- 👤 **City Offices** — locations, contact details, office hours\n\n"
+        "For this specific inquiry, you may visit **City Hall** or contact the **City Information Office** directly.\n\n"
+        "Is there something from the list above I can help you with?"
+    ),
+    (
+        "I'm sorry, I couldn't find a specific answer for that question. 😔\n\n"
+        "Try rephrasing your question or ask about one of these topics I know well:\n\n"
+        "- *\"What are the requirements for a business permit?\"*\n"
+        "- *\"Where is the City Social Welfare office?\"*\n"
+        "- *\"What tourist spots are in Surigao City?\"*\n"
+        "- *\"What is the Executive Legislative Agenda?\"*\n\n"
+        "You can also visit the **Surigao City Hall** for direct assistance."
+    ),
+    (
+        "I don't have enough information to answer that specifically. 🔍\n\n"
+        "For the most accurate and up-to-date details, I recommend:\n\n"
+        "- 🏛️ Visiting **Surigao City Hall** in person\n"
+        "- 📞 Contacting the **City Information Office**\n"
+        "- 🌐 Checking the official **Surigao City website**\n\n"
+        "In the meantime, feel free to ask me about city services, permits, tourism, or LGU programs — I'll do my best to help!"
     ),
 ]
 
@@ -534,9 +552,11 @@ def generate_response(
             return random.choice(_COMPLAINT_LGU)
         return random.choice(_COMPLAINT_DEFAULT)
 
-    # ── LGU Query ─────────────────────────────────────────────────────────────
+    # ── LGU Query (no RAG/FAQ data found) ────────────────────────────────────
+    # RAG context was already handled above; reaching here means no specific
+    # answer exists — guide the user rather than returning generic marketing copy.
     if intent == "lgu_query":
-        return random.choice(_LGU_RESPONSES)
+        return random.choice(_LGU_NO_DATA_RESPONSES)
 
     # ── Tourism Query ─────────────────────────────────────────────────────────
     if intent == "tourism_query":

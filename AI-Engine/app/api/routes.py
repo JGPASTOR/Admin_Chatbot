@@ -1523,6 +1523,24 @@ async def flagged_query_dismiss(
     return {"success": True, "message": f"Flagged query {query_id} dismissed."}
 
 
+@router.delete("/flagged-queries/{query_id}/permanent", response_model=dict)
+@limiter.limit("20/minute")
+async def flagged_query_delete(
+    request: Request,
+    query_id: int,
+    db: DBSession = Depends(get_db),
+):
+    """Permanently delete a flagged query from the database."""
+    entry = db.query(FlaggedQuery).filter(FlaggedQuery.id == query_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Flagged query {query_id} not found.")
+
+    db.delete(entry)
+    db.commit()
+
+    return {"success": True, "message": f"Flagged query {query_id} permanently deleted."}
+
+
 # ── Phase 3: 3-Tier Priority Queue ────────────────────────────────────────────
 
 @router.post("/chat/prioritized", response_model=dict)

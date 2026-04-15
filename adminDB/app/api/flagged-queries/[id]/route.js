@@ -23,8 +23,14 @@ export async function PATCH(request, { params }) {
 export async function DELETE(request, { params }) {
     try {
         const { id } = await params;
+        const { searchParams } = new URL(request.url);
+        const permanent = searchParams.get('permanent') === 'true';
 
-        const res = await fetch(`${AI_URL}/api/flagged-queries/${id}`, {
+        const endpoint = permanent
+            ? `${AI_URL}/api/flagged-queries/${id}/permanent`
+            : `${AI_URL}/api/flagged-queries/${id}`;
+
+        const res = await fetch(endpoint, {
             method: 'DELETE',
             signal: AbortSignal.timeout(8000),
         });

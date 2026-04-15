@@ -85,6 +85,22 @@ export default function NeedsReviewPage() {
         }
     };
 
+    const deleteEntry = async (id) => {
+        if (!confirm('Permanently delete this entry? This cannot be undone.')) return;
+        try {
+            const res = await fetch(`/api/flagged-queries/${id}?permanent=true`, { method: 'DELETE' });
+            const data = await res.json();
+            if (data.success) {
+                showToast('Entry permanently deleted.');
+                setEntries(prev => prev.filter(e => e.id !== id));
+            } else {
+                showToast(data.detail || 'Failed to delete.', 'error');
+            }
+        } catch {
+            showToast('Network error.', 'error');
+        }
+    };
+
     const confidenceColor = (c) => {
         if (c < 0.2) return '#ef4444';
         if (c < 0.4) return '#f97316';
@@ -201,6 +217,27 @@ export default function NeedsReviewPage() {
                                         {isExpanded ? '▲' : '▼'}
                                     </div>
                                 </div>
+
+                                {/* Delete button for resolved/dismissed tabs */}
+                                {isExpanded && activeTab !== 'pending' && (
+                                    <div style={{
+                                        padding: '0 18px 16px 18px',
+                                        borderTop: '1px solid var(--border)',
+                                        paddingTop: 14,
+                                    }}>
+                                        <button
+                                            onClick={() => deleteEntry(entry.id)}
+                                            style={{
+                                                padding: '8px 16px', borderRadius: 7,
+                                                background: '#ef444411', color: '#ef4444',
+                                                border: '1px solid #ef444444', cursor: 'pointer',
+                                                fontWeight: 600, fontSize: 13,
+                                            }}
+                                        >
+                                            Delete Permanently
+                                        </button>
+                                    </div>
+                                )}
 
                                 {/* Expand — answer form (only for pending) */}
                                 {isExpanded && activeTab === 'pending' && (
