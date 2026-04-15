@@ -606,8 +606,8 @@ def add_document_to_index(text: str, filename: str = "unknown") -> int:
     """
     global _rag_ready
 
-    if _embedding_model is None:
-        raise RuntimeError("[RAG] Embedding model is not loaded. Call initialize_rag() first.")
+    if not _rag_ready:
+        raise RuntimeError("[RAG] RAG is not initialized. Call initialize_rag() first.")
 
     new_chunks = _chunk_text(text)  # uses global CHUNK_SIZE=600, OVERLAP=150
     if not new_chunks:

@@ -55,7 +55,10 @@ async def generate_llm_response(
         f"{lang_instruction} "
         "Do NOT answer from your own training knowledge. "
         "Do NOT make up city services, LGU programs, tourism info, or document statuses. "
-        "Only use information explicitly given to you in the prompt."
+        "Only use information explicitly given to you in the prompt. "
+        "Do NOT reference or cite section numbers, article numbers, or document structure "
+        "unless the user specifically asked about a section or article. "
+        "Extract and state the answer directly — do not say 'According to Section X' or 'As stated in Article Y'."
     )
 
     try:
@@ -108,7 +111,11 @@ async def generate_llm_response_stream(
             "topics or items that appear in the excerpts but were not asked about. "
             "Do NOT say you cannot help. Do NOT ask for a Tracking Number. "
             "Do NOT make up information not found in the excerpts. "
-            "Respond concisely and stay strictly on topic."
+            "Respond concisely and stay strictly on topic. "
+            "Do NOT reference or cite section numbers, article numbers, or document structure "
+            "unless the user specifically asked about a section or article. "
+            "If the answer appears inside a section of a document, extract just the answer — "
+            "do not say 'According to Section X' or 'As stated in Article Y'."
         )
     else:
         system_prompt = (
@@ -198,11 +205,16 @@ def _build_prompt(
                 " Provide specific details like locations, addresses, or notable features if found in the excerpts."
             ) if intent == "tourism_query" else ""
 
+            no_section_cite = (
+                "" if section_match
+                else " Do NOT cite section or article numbers in your answer — just state the answer directly."
+            )
+
             return (
                 f"The user asked: \"{question}\"\n\n"
                 f"Answer ONLY what the user specifically asked about. "
                 f"The excerpts below may contain related or neighbouring topics — ignore anything not directly relevant to the question."
-                f"{section_hint}{tourism_hint} "
+                f"{section_hint}{tourism_hint}{no_section_cite} "
                 f"Do NOT make up information not found below. If the answer isn't in the excerpts, "
                 f"say so politely and suggest they contact the City Tourism Office or visit City Hall.\n\n"
                 f"--- Document Excerpts ---\n{rag_context}\n--- End of Excerpts ---\n\n"
