@@ -2,6 +2,8 @@
 import { useState, useEffect, useRef } from 'react';
 import Header from '../../components/Header';
 import TrainingTabs from '../../components/TrainingTabs';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 const FILE_ICONS = { pdf: '📄', docx: '📝', doc: '📝', xlsx: '📊', xls: '📊' };
 
@@ -28,7 +30,7 @@ const btn = (color = '#1a5c37', disabled = false) => ({
 });
 
 const STATUS_COLORS = {
-    pending:  { bg: '#fef9c3', color: '#854d0e', label: 'Pending' },
+    pending: { bg: '#fef9c3', color: '#854d0e', label: 'Pending' },
     approved: { bg: '#dcfce7', color: '#16a34a', label: 'Approved' },
     rejected: { bg: '#fee2e2', color: '#dc2626', label: 'Rejected' },
 };
@@ -58,6 +60,7 @@ export default function AITrainingPage() {
 
     // Rebuild
     const [rebuilding, setRebuilding] = useState(false);
+    const [generatingAllPDF, setGeneratingAllPDF] = useState(false);
 
     // Delete document
     const [deletingDoc, setDeletingDoc] = useState(null);
@@ -97,7 +100,7 @@ export default function AITrainingPage() {
                 faqs: f.entries?.length ?? 0,
                 pending: p.data?.length ?? 0,
             });
-        }).catch(() => {});
+        }).catch(() => { });
     };
 
     useEffect(() => { loadDocs(); loadPending(); loadStats(); }, []);
@@ -274,6 +277,182 @@ export default function AITrainingPage() {
         setRebuilding(false);
     };
 
+    // ── Generate All FAQs PDF (approved + pending only) ──
+    const handleGenerateAllFAQsPDF = async () => {
+        setGeneratingAllPDF(true);
+        try {
+            // Fetch approved and pending FAQs only (rejected are excluded)
+            const [approvedRes, pendingRes] = await Promise.all([
+                fetch('/api/faq').then(r => r.json()),
+                fetch('/api/pending-faqs?status=pending').then(r => r.json()),
+            ]);
+
+            const approvedRows = (approvedRes.entries || []).map(e => ({
+                question: e.question,
+                answer: e.answer,
+                section: e.section || '-',
+                doc_name: e.doc_name || '-',
+                status: 'Approved',
+            }));
+            const pendingRows = (pendingRes.data || []).map(e => ({
+                question: e.question,
+                answer: e.answer,
+                section: e.section || '-',
+                doc_name: e.doc_name || '-',
+                status: 'Pending',
+            }));
+
+            const allRows = [...approvedRows, ...pendingRows];
+
+            if (allRows.length === 0) {
+                showFlash('No FAQs found to generate PDF.', true);
+                setGeneratingAllPDF(false);
+                return;
+            }
+
+            const pdf = new jsPDF({ orientation: 'landscape' });
+
+            // Title
+            pdf.setFontSize(18);
+            pdf.setTextColor(26, 92, 55);
+            pdf.text('All FAQ Entries Report', 14, 16);
+            pdf.setFontSize(10);
+            pdf.setTextColor(100, 116, 139);
+            pdf.text(`Generated on: ${new Date().toLocaleString()}`, 14, 23);
+            pdf.text(`Total: ${allRows.length} entries  |  Approved: ${approvedRows.length}  |  Pending: ${pendingRows.length}`, 14, 29);
+
+            autoTable(pdf, {
+                head: [['#', 'Status', 'Document', 'Section', 'Question', 'Answer']],
+                body: allRows.map((row, i) => [
+                    i + 1,
+                    row.status,
+                    row.doc_name,
+                    row.section,
+                    row.question,
+                    row.answer || '',
+                ]),
+                startY: 34,
+                styles: { fontSize: 7.5, cellPadding: 2.5, overflow: 'linebreak', valign: 'top' },
+                columnStyles: {
+                    0: { cellWidth: 8, halign: 'center' },
+                    1: { cellWidth: 20, halign: 'center' },
+                    2: { cellWidth: 35 },
+                    3: { cellWidth: 25 },
+                    4: { cellWidth: 55 },
+                    5: { cellWidth: 'auto' },
+                },
+                headStyles: { fillColor: [26, 92, 55], textColor: 255, fontStyle: 'bold' },
+                didParseCell: (data) => {
+                    if (data.column.index === 1 && data.section === 'body') {
+                        const v = data.cell.raw;
+                        if (v === 'Approved') data.cell.styles.textColor = [22, 163, 74];
+                        else if (v === 'Pending') data.cell.styles.textColor = [217, 119, 6];
+                        else if (v === 'Rejected') data.cell.styles.textColor = [220, 38, 38];
+                    }
+                },
+                alternateRowStyles: { fillColor: [248, 250, 252] },
+                margin: { left: 14, right: 14 },
+            });
+
+            pdf.save(`All_FAQs_Report_${new Date().toISOString().split('T')[0]}.pdf`);
+            showFlash(`PDF generated with ${allRows.length} FAQ entries!`);
+        } catch (err) {
+            showFlash('Failed to generate PDF: ' + err.message, true);
+        }
+        setGeneratingAllPDF(false);
+    };
+
+    // ── Generate PDF (Pending only) ──
+    const handleGeneratePDF = () => {
+        if (visiblePending.length === 0) return showFlash('No data to generate PDF.', true);
+        const doc = new jsPDF({ orientation: 'landscape' });
+
+        doc.setFontSize(16);
+        doc.setTextColor(30, 58, 95);
+        doc.text('Pending FAQ Proposals', 14, 15);
+        doc.setFontSize(10);
+        doc.setTextColor(100, 116, 139);
+        doc.text(`Generated on: ${new Date().toLocaleString()}`, 14, 22);
+        doc.text(`Total: ${visiblePending.length} pending proposals`, 14, 28);
+
+        const tableColumn = ['#', 'Document', 'Section', 'Question', 'Answer', 'Confidence'];
+        const tableRows = [];
+
+        visiblePending.forEach((item, idx) => {
+            const rowData = [
+                idx + 1,
+                item.doc_name || '-',
+                item.section || '-',
+                editedQ[item.id] ?? item.question,
+                item.answer || '',
+                item.confidence_score ?? '-'
+            ];
+            tableRows.push(rowData);
+        });
+
+        autoTable(doc, {
+            head: [tableColumn],
+            body: tableRows,
+            startY: 33,
+            styles: { fontSize: 7.5, cellPadding: 2.5, overflow: 'linebreak', valign: 'top' },
+            columnStyles: {
+                0: { cellWidth: 8, halign: 'center' },
+                1: { cellWidth: 35 },
+                2: { cellWidth: 25 },
+                3: { cellWidth: 55 },
+                4: { cellWidth: 'auto' },
+                5: { cellWidth: 18, halign: 'center' },
+            },
+            headStyles: { fillColor: [30, 58, 95], textColor: 255, fontStyle: 'bold' },
+            alternateRowStyles: { fillColor: [248, 250, 252] },
+            margin: { left: 14, right: 14 },
+        });
+
+        doc.save(`Pending_FAQs_${new Date().toISOString().split('T')[0]}.pdf`);
+    };
+
+    // ── Generate Document Library PDF ──
+    const handleGenerateDocsPDF = () => {
+        if (docs.length === 0) return showFlash('No documents to generate PDF.', true);
+        const pdf = new jsPDF();
+
+        pdf.setFontSize(16);
+        pdf.text('Uploaded Documents Library', 14, 15);
+        pdf.setFontSize(10);
+        pdf.text(`Generated on: ${new Date().toLocaleString()}`, 14, 22);
+
+        const tableColumn = ["File Name", "Type", "Size", "Upload Date", "Keywords Extracted"];
+        const tableRows = [];
+
+        docs.forEach(doc => {
+            let keywords = [];
+            try { keywords = doc.keywords ? (typeof doc.keywords === 'string' ? JSON.parse(doc.keywords) : doc.keywords) : []; } catch { keywords = []; }
+
+            const rowData = [
+                doc.original_name || '-',
+                (doc.file_type || '-').toUpperCase(),
+                formatSize(doc.file_size),
+                formatDate(doc.created_at),
+                keywords.length > 0 ? keywords.join(', ') : 'None'
+            ];
+            tableRows.push(rowData);
+        });
+
+        autoTable(pdf, {
+            head: [tableColumn],
+            body: tableRows,
+            startY: 28,
+            styles: { fontSize: 8, cellPadding: 2, overflow: 'linebreak' },
+            columnStyles: {
+                0: { cellWidth: 50 },
+                4: { cellWidth: 70 }
+            },
+            headStyles: { fillColor: [26, 92, 55] } // Hex #1a5c37 converted to RGB
+        });
+
+        pdf.save(`Document_Library_${new Date().toISOString().split('T')[0]}.pdf`);
+    };
+
     // Unique docs in pending list (for filter dropdown)
     const pendingDocs = [...new Map(pending.map(p => [p.doc_id, { id: p.doc_id, name: p.doc_name }])).values()];
 
@@ -322,6 +501,16 @@ export default function AITrainingPage() {
                         <div style={{ fontSize: 11, color: '#64748b', textAlign: 'center' }}>
                             Use after bulk uploads or deletions
                         </div>
+                        <button
+                            onClick={handleGenerateAllFAQsPDF}
+                            disabled={generatingAllPDF}
+                            style={{ ...btn('#7c3aed', generatingAllPDF), marginTop: 4, width: '100%' }}
+                        >
+                            {generatingAllPDF ? '⏳ Generating...' : '📋 Generate All FAQs as PDF'}
+                        </button>
+                        <div style={{ fontSize: 11, color: '#64748b', textAlign: 'center' }}>
+                            Exports approved, pending &amp; rejected
+                        </div>
                     </div>
                 </div>
 
@@ -362,11 +551,9 @@ export default function AITrainingPage() {
 
                 {/* ── Document Library ── */}
                 <div style={{ ...card({ marginBottom: 24, overflow: 'hidden' }) }}>
-                    <div style={{ background: '#1a5c37', padding: '12px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <div>
-                            <span style={{ color: '#fff', fontWeight: 700, fontSize: 14 }}>Document Library</span>
-                            <span style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12, marginLeft: 10 }}>{docs.length} files</span>
-                        </div>
+                    <div style={{ background: '#1a5c37', padding: '12px 20px', display: 'flex', alignItems: 'center' }}>
+                        <span style={{ color: '#fff', fontWeight: 700, fontSize: 14 }}>Document Library</span>
+                        <span style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12, marginLeft: 10 }}>{docs.length} files</span>
                     </div>
 
                     {docsLoading ? (
@@ -395,6 +582,14 @@ export default function AITrainingPage() {
                                                 </div>
                                             </div>
                                             <div style={{ display: 'flex', gap: 8 }}>
+                                                <a
+                                                    href={`/uploads/${doc.filename}`}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    style={{ ...btn('#0284c7'), padding: '5px 12px', textDecoration: 'none', display: 'inline-block' }}
+                                                >
+                                                    👁 View
+                                                </a>
                                                 <button
                                                     onClick={() => setExpandedDoc(expandedDoc === doc.id ? null : doc.id)}
                                                     style={{ ...btn('#64748b'), padding: '5px 12px' }}
@@ -532,8 +727,8 @@ export default function AITrainingPage() {
                                                     const s = item.confidence_score;
                                                     const [bg, color, label] =
                                                         s >= 8 ? ['#bbf7d0', '#15803d', `AI ${s}/10`] :
-                                                        s >= 5 ? ['#fef08a', '#854d0e', `AI ${s}/10`] :
-                                                                 ['#fecaca', '#991b1b', `AI ${s}/10`];
+                                                            s >= 5 ? ['#fef08a', '#854d0e', `AI ${s}/10`] :
+                                                                ['#fecaca', '#991b1b', `AI ${s}/10`];
                                                     return (
                                                         <span style={{ background: bg, color, borderRadius: 4, padding: '2px 8px', fontSize: 10, fontWeight: 700 }}>
                                                             {label}

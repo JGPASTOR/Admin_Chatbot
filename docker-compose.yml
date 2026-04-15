@@ -43,6 +43,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      # Persist uploaded documents across container rebuilds
+      - ./adminDB/public/uploads:/app/public/uploads
     networks:
       - dts_net
 

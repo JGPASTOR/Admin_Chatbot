@@ -1,5 +1,7 @@
 # ── Admin Panel — Next.js 16 ───────────────────────────────────────
 FROM node:20-alpine AS base
+# Add libc6-compat to fix Next.js SWC binary issues on Alpine
+RUN apk update && apk add --no-cache libc6-compat
 WORKDIR /app
 
 # Install dependencies only when needed
@@ -29,6 +31,9 @@ RUN addgroup --system --gid 1001 nodejs && \
     adduser  --system --uid 1001 nextjs
 
 COPY --from=builder /app/public ./public
+
+# Create uploads dir and give nextjs user write permission
+RUN mkdir -p ./public/uploads && chown -R nextjs:nodejs ./public/uploads
 
 # Leverage Next.js standalone output for smaller image
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./

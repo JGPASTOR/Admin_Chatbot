@@ -8,6 +8,8 @@
     "start": "next start -p 3005"
   },
   "dependencies": {
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.7",
     "mammoth": "^1.11.0",
     "mysql2": "^3.18.0",
     "next": "16.1.6",

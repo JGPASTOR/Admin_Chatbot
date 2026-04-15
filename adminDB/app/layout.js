@@ -2,7 +2,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import AppShell from "../components/AppShell";
 
-const inter = Inter({ subsets: ["latin"] });
+const inter = Inter({ subsets: ["latin"], preload: false });
 
 export const metadata = {
   title: "DocTrack Admin — Chatbot AI Document Tracker",
