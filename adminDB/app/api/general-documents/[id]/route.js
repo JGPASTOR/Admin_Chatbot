@@ -38,7 +38,7 @@ export async function DELETE(request, { params }) {
         const filePath = path.join(process.cwd(), 'public', file_path);
         try { await fs.unlink(filePath); } catch { }
 
-        const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
+        const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://192.168.254.110:8000';
         try {
             const ragRes = await fetch(`${aiEngineUrl}/api/rag/delete`, {
                 method: 'POST',

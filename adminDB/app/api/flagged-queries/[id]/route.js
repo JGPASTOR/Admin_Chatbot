@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server';
 
-const AI_URL = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
+const AI_URL = process.env.AI_ENGINE_URL || 'http://192.168.254.110:8000';
 
-/* PATCH /api/flagged-queries/[id] — resolve with admin answer */
 export async function PATCH(request, { params }) {
     try {
         const { id } = await params;
@@ -21,7 +20,6 @@ export async function PATCH(request, { params }) {
     }
 }
 
-/* DELETE /api/flagged-queries/[id] — dismiss */
 export async function DELETE(request, { params }) {
     try {
         const { id } = await params;

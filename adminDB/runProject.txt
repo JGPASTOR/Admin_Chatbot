@@ -7,10 +7,12 @@ link data: http://devapi.surigaocity.gov.ph/api/web_app/public/document_viewer_q
 docker compose down 
 docker compose up --build -d
 
+http://127.0.0.1:8000
+
 
 to seed data in mysql: curl.exe -s http://127.0.0.1:8000/api/seed
 curl.exe -s -X POST -H "Content-Type: application/json" -d @document1011.json http://127.0.0.1:8000/api/seed
-cmd.exe /c "curl.exe -s -X POST -H ""Content-Type: application/json"" -d @document1011.json http://127.0.0.1:8000/api/seed"
+cmd.exe /c "curl.exe -s -X POST -H ""Content-Type: application/json"" -d @document1011.json /api/seed"
 
 Updating /api/seed to load and seed all 5 document JSON files into MySQL
 Executing the /api/seed endpoint to parse and insert the documents

@@ -1,7 +1,7 @@
 import pool from '../../../lib/db';
 import { NextResponse } from 'next/server';
 
-const AI_ENGINE = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
+const AI_ENGINE = process.env.AI_ENGINE_URL || 'http://192.168.254.110:8000';
 
 async function ensureTable() {
     const conn = await pool.getConnection();
@@ -91,9 +91,9 @@ export async function POST(request) {
 
         const body = await request.json();
         const question = body?.question?.trim();
-        const answer   = body?.answer?.trim();
-        const section  = body?.section?.trim() || null;
-        const doc_id   = body?.doc_id ?? null;
+        const answer = body?.answer?.trim();
+        const section = body?.section?.trim() || null;
+        const doc_id = body?.doc_id ?? null;
         const doc_name = body?.doc_name?.trim() || null;
 
         if (!question || !answer) {

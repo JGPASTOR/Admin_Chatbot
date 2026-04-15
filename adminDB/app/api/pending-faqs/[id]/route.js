@@ -37,7 +37,7 @@ export async function PUT(request, { params }) {
             // Push new entry into AI Engine's in-memory cache
             // Use a generous timeout — embedding service can take 10-20 s when warming up
             try {
-                const aiUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
+                const aiUrl = process.env.AI_ENGINE_URL || 'http://192.168.254.110:8000';
                 await fetch(`${aiUrl}/api/faq`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },

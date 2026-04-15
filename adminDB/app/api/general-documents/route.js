@@ -199,7 +199,7 @@ export async function DELETE(request) {
         } catch { /* file may not exist */ }
 
         // Notify AI Engine to remove from RAG index (non-fatal)
-        const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
+        const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://192.168.254.110:8000';
         try {
             await fetch(`${aiEngineUrl}/api/rag/delete`, {
                 method: 'POST',
@@ -301,7 +301,7 @@ export async function POST(request) {
         })();
 
         if (_docText) {
-            const _aiUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
+            const _aiUrl = process.env.AI_ENGINE_URL || 'http://192.168.254.110:8000';
 
             (async () => {
                 try {
@@ -367,7 +367,7 @@ export async function POST(request) {
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({ question: pair.question, answer: pair.answer, section: pair.section || null }),
                                     signal: AbortSignal.timeout(5000),
-                                }).catch(() => {});
+                                }).catch(() => { });
                                 autoApproved++;
                             }
                         }
@@ -390,7 +390,7 @@ export async function POST(request) {
 
         let ragWarning = null;
         if (rawText) {
-            const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
+            const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://192.168.254.110:8000';
             // Fire and forget — no await, no timeout kills the ingest
             fetch(`${aiEngineUrl}/api/rag/ingest`, {
                 method: 'POST',

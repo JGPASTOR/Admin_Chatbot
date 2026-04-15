@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import pool from '../../../../lib/db';
 
 export async function POST() {
-    const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
+    const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://192.168.254.110:8000';
 
     // ── Step 1: Rebuild the RAG index from all documents ──
     let ragResult = { total_chunks: 0 };

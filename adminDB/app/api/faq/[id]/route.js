@@ -1,7 +1,7 @@
 import pool from '../../../../lib/db';
 import { NextResponse } from 'next/server';
 
-const AI_ENGINE = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
+const AI_ENGINE = process.env.AI_ENGINE_URL || 'http://192.168.254.110:8000';
 
 async function notifyEngine(path, method, body) {
     try {
@@ -20,8 +20,8 @@ export async function PUT(request, { params }) {
         const { id } = await params;
         const body = await request.json();
         const question = body?.question?.trim();
-        const answer   = body?.answer?.trim();
-        const section  = body?.section?.trim() || null;
+        const answer = body?.answer?.trim();
+        const section = body?.section?.trim() || null;
 
         const conn = await pool.getConnection();
         try {

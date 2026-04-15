@@ -36,7 +36,7 @@ export async function POST(request) {
             return NextResponse.json({ success: false, error: 'ids array is required.' }, { status: 400 });
         }
 
-        const aiUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
+        const aiUrl = process.env.AI_ENGINE_URL || 'http://192.168.254.110:8000';
         const conn = await pool.getConnection();
         try {
             let approved = 0;

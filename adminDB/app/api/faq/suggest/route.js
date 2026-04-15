@@ -150,7 +150,7 @@ export async function POST(request) {
         text = cleanDocText(text);
 
         // ── Try LLM-powered generation first ──
-        const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://127.0.0.1:8000';
+        const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://192.168.254.110:8000';
         let proposals = [];
         let usedLLM = false;
 
