@@ -63,6 +63,21 @@ CREATE TABLE IF NOT EXISTS `faq_entries` (
 ALTER TABLE `general_documents`
   ADD COLUMN IF NOT EXISTS `keywords` JSON DEFAULT NULL;
 
+CREATE TABLE IF NOT EXISTS `locations` (
+  `id`               INT            NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `name`             VARCHAR(255)   NOT NULL,
+  `category`         VARCHAR(100)   NOT NULL DEFAULT 'shop',
+  `description`      TEXT           DEFAULT NULL,
+  `address`          VARCHAR(500)   DEFAULT NULL,
+  `latitude`         DECIMAL(10,7)  DEFAULT NULL,
+  `longitude`        DECIMAL(10,7)  DEFAULT NULL,
+  `contact`          VARCHAR(255)   DEFAULT NULL,
+  `operating_hours`  VARCHAR(255)   DEFAULT NULL,
+  `google_maps_url`  VARCHAR(1000)  DEFAULT NULL,
+  `created_at`       DATETIME       DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`       DATETIME       DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS `pending_faqs` (
   `id`               INT            NOT NULL AUTO_INCREMENT PRIMARY KEY,
   `doc_id`           INT            DEFAULT NULL,
