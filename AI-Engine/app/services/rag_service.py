@@ -944,18 +944,19 @@ def faq_lookup(query: str) -> Optional[str]:
             if similarity < FAQ_THRESHOLD:
                 continue
 
-            # Apply a soft penalty (-0.15) when the user specified a section number
-            # but the FAQ question doesn't mention it, rather than skipping outright.
+            # Soft section-number signal — boosts exact match, lightly penalises
+            # wrong section.  NOT a hard gate: a -0.10 nudge should not eliminate
+            # a 0.75 match just because the user mentioned "section 3".
             if query_section_num is not None:
                 faq_question = meta.get("question", "")
                 faq_section = re.search(r'\bsection\s+(\d+)\b', faq_question.lower())
                 if faq_section and faq_section.group(1) == query_section_num:
                     similarity += 0.10  # boost exact section match
                 elif faq_section:
-                    similarity -= 0.15  # penalise wrong section
-
-            if similarity < FAQ_THRESHOLD:
-                continue
+                    similarity -= 0.10  # gentle nudge down for wrong section (was -0.15)
+            # ── No second threshold gate here ─────────────────────────────────
+            # The section penalty is a preference signal, not a disqualifier.
+            # We pick the highest-scoring entry that cleared the initial gate.
 
             if similarity > best_score:
                 best_score = similarity
@@ -969,3 +970,77 @@ def faq_lookup(query: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"[FAQ] Lookup failed: {e}")
         return None
+
+
+def is_faq_duplicate(question: str, threshold: float = 0.85) -> bool:
+    """
+    Sync semantic dedup check — returns True if a very similar FAQ already exists.
+    Used by both routes.py and the auto-cache pipeline in conversation.py.
+
+    Thresholds:
+      >= 0.80  → almost certainly the same question → skip insert
+      0.65–0.80 → related but distinct phrasing → allow (variant coverage)
+      < 0.65   → unique → definitely insert
+    """
+    if _embedding_model is None:
+        return False
+    try:
+        faq_col = _get_faq_collection()
+        if faq_col.count() == 0:
+            return False
+        emb = _embed([question])
+        results = faq_col.query(
+            query_embeddings=emb,
+            n_results=min(5, faq_col.count()),
+            include=["distances"],
+        )
+        if results["distances"] and results["distances"][0]:
+            best_sim = 1.0 - results["distances"][0][0]
+            if best_sim >= threshold:
+                logger.info(f"[DedupFAQ] Duplicate (sim={best_sim:.3f}) for: '{question[:60]}'")
+                return True
+    except Exception as e:
+        logger.warning(f"[DedupFAQ] Check failed: {e}")
+    return False
+
+
+def store_faq_variants_sync(faq_id: int, question: str, answer: str, llm_url: str, n: int = 4) -> None:
+    """
+    Sync helper: call the LLM service to generate N alternate phrasings of *question*
+    and store them in the FAQ ChromaDB collection so short/varied user queries also match.
+
+    Called from both BackgroundTasks (routes.py) and asyncio run_in_executor
+    (conversation.py auto-cache).  Uses httpx sync so it's safe in any context.
+    """
+    import httpx as _httpx
+    import json as _json
+
+    system = (
+        "You generate alternative phrasings of a question. "
+        f"Return ONLY a valid JSON array of {n} question strings — no markdown, no explanation."
+    )
+    prompt = (
+        f"Original question: {question}\n\n"
+        f"Generate {n} different ways a person might ask this exact same question. "
+        "Include 1-2 very short (3-5 word) versions AND 1-2 full sentence versions. "
+        f"Return a JSON array of exactly {n} strings."
+    )
+    try:
+        res = _httpx.post(
+            f"{llm_url}/api/generate",
+            json={"prompt": prompt, "system_prompt": system},
+            timeout=30,
+        )
+        res.raise_for_status()
+        raw = res.json().get("response", "").strip()
+        # Strip markdown code fences if present
+        raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("` \n")
+        m = re.search(r'\[[\s\S]*?\]', raw)
+        variants = _json.loads(m.group(0) if m else raw)
+        if isinstance(variants, list):
+            variants = [str(v).strip() for v in variants if v and str(v).strip() and str(v).strip() != question][:n]
+            if variants:
+                add_faq_question_variants(faq_id, variants, answer)
+                logger.info(f"[Variants] Stored {len(variants)} variants for FAQ id={faq_id}.")
+    except Exception as e:
+        logger.warning(f"[Variants] Failed for FAQ id={faq_id}: {e}")

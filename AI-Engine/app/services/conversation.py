@@ -10,6 +10,7 @@ Handles:
 6. Chat logging
 """
 
+import asyncio
 import json
 import time
 import uuid
@@ -98,6 +99,69 @@ def update_session_context(db: DBSession, session: Session, key: str, value: Any
     ctx[key] = value
     session.context = ctx
     db.commit()
+
+
+async def _auto_cache_faq(question: str, answer: str) -> None:
+    """
+    Fire-and-forget: persist a successful LLM+RAG answer to the FAQ database so
+    identical or very similar future questions are served instantly (faq_cache path)
+    without calling Ollama again.
+
+    Only triggered when:
+      - The LLM was used (not a template)
+      - The answer was RAG-grounded (rag_context existed — not hallucinated)
+      - The answer is substantial (> 50 chars)
+      - No sufficiently similar FAQ already exists (dedup threshold 0.80)
+
+    Uses its own DB session so the caller's request-scoped session can close normally.
+    Generates 4 question variants via LLM in a thread executor so short/varied user
+    queries (e.g. "ano ang bayad?") also hit the cached FAQ next time.
+    """
+    from app.db.database import SessionLocal
+    from app.db.models import FAQEntry, FAQHistory
+
+    db = SessionLocal()
+    try:
+        # Dedup: skip if a very similar answer is already in the FAQ DB
+        if rag_service.is_faq_duplicate(question, threshold=0.80):
+            return
+
+        # Persist to MySQL
+        entry = FAQEntry(question=question, answer=answer, section=None)
+        db.add(entry)
+        db.flush()  # get id before commit
+        db.add(FAQHistory(
+            faq_id=entry.id,
+            question=question,
+            answer=answer,
+            changed_by="ai-cached",
+            change_type="created",
+        ))
+        db.commit()
+        db.refresh(entry)
+
+        # Hot-load the main question into ChromaDB immediately
+        rag_service.add_faq_to_cache(entry.id, entry.question, entry.answer)
+
+        # Generate question variants in a thread executor (LLM call is sync)
+        llm_url = settings.LLM_SERVICE_URL
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            rag_service.store_faq_variants_sync,
+            entry.id, question, answer, llm_url, 4,
+        )
+
+        print(f"[AutoCache] FAQ id={entry.id} cached: '{question[:70]}'")
+
+    except Exception as e:
+        print(f"[AutoCache] Failed to cache FAQ: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    finally:
+        db.close()
 
 
 @dataclass
@@ -308,12 +372,19 @@ async def process_message(
         reply = generate_response(p.intent, p.entities, p.document, p.context, topic=topic, language=language, rag_context=p.rag_context)
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
-    src = "llm" if used_llm else ("rag_template" if p.rag_context else "rag_template")
+    src = "llm" if used_llm else "rag_template"
 
     # Log messages
     log_message(db, p.session.id, "user", message, p.intent, p.confidence, p.entities)
     log_message(db, p.session.id, "bot", reply,
                 response_source=src, response_ms=elapsed_ms)
+
+    # Auto-cache: persist successful RAG-grounded LLM answers to FAQ DB so
+    # future similar questions are served instantly (no Ollama call needed).
+    # Only for general-services questions (lgu_query / follow_up with RAG).
+    if (used_llm and p.rag_context and reply and len(reply) > 50
+            and p.intent in ("lgu_query", "follow_up", "unknown")):
+        asyncio.create_task(_auto_cache_faq(message, reply))
 
     # Safety Net: flag problematic queries for admin review
     if not p.faq_answer and not p.document:
@@ -457,12 +528,17 @@ async def stream_message(
         })
         yield f"data: [DONE]{done_meta}\n\n"
 
-    src = "llm" if used_llm else ("rag_template" if p.rag_context else "rag_template")
+    src = "llm" if used_llm else "rag_template"
 
     # Log the complete interaction
     log_message(db, p.session.id, "user", message, p.intent, p.confidence, p.entities)
     log_message(db, p.session.id, "bot", full_reply,
                 response_source=src, response_ms=elapsed_ms)
+
+    # Auto-cache: persist successful RAG-grounded LLM answers so future asks skip Ollama
+    if (used_llm and p.rag_context and full_reply and len(full_reply) > 50
+            and p.intent in ("lgu_query", "follow_up", "unknown")):
+        asyncio.create_task(_auto_cache_faq(message, full_reply))
 
     # Safety Net: flag problematic queries for admin review
     if not p.faq_answer and not p.document:
