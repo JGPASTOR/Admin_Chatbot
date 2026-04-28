@@ -2026,3 +2026,65 @@ async def monthly_faq_audit(
         "message": f"Found {len(stale_list)} potentially stale FAQs for audit.",
         "stale_faqs": stale_list
     }
+
+
+@router.get("/debug/faq-collection", response_model=dict)
+async def debug_faq_collection(request: Request, query: str = ""):
+    """
+    **Debug**: Inspect the ChromaDB FAQ collection.
+
+    Shows total entry count, all loc_faq_* entries, and optionally
+    tests faq_lookup() with a given query string.
+    """
+    from app.services.rag_service import (
+        _get_faq_collection, _get_rag_collection,
+        faq_lookup, _embedding_model, _rag_ready,
+    )
+
+    result = {
+        "rag_ready": _rag_ready,
+        "embedding_model_set": _embedding_model is not None,
+        "embedding_model_value": str(_embedding_model)[:50],
+    }
+
+    try:
+        faq_col = _get_faq_collection()
+        result["faq_collection_count"] = faq_col.count()
+
+        # Get all entries (up to 100)
+        all_entries = faq_col.get(
+            include=["metadatas"],
+            limit=100,
+        )
+        loc_entries = []
+        regular_entries = []
+        for vid, meta in zip(all_entries["ids"], all_entries["metadatas"]):
+            entry = {"id": vid, "question": meta.get("question", "")[:80], "answer": meta.get("answer", "")[:60]}
+            if vid.startswith("loc_faq_"):
+                loc_entries.append(entry)
+            else:
+                regular_entries.append(entry)
+
+        result["location_faq_count"] = len(loc_entries)
+        result["regular_faq_count"] = len(regular_entries)
+        result["location_faqs"] = loc_entries[:20]
+        result["regular_faqs_sample"] = regular_entries[:5]
+    except Exception as e:
+        result["faq_error"] = str(e)
+
+    try:
+        rag_col = _get_rag_collection()
+        result["rag_collection_count"] = rag_col.count()
+    except Exception as e:
+        result["rag_error"] = str(e)
+
+    # Test faq_lookup if a query was provided
+    if query:
+        try:
+            answer = faq_lookup(query)
+            result["faq_lookup_query"] = query
+            result["faq_lookup_result"] = answer[:200] if answer else None
+        except Exception as e:
+            result["faq_lookup_error"] = str(e)
+
+    return result

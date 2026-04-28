@@ -760,7 +760,6 @@ def rebuild_index() -> int:
         all_chunks.extend(doc_chunks)
         all_filenames.extend([original_name] * len(doc_chunks))
 
-    import os
     emb_url = os.environ.get("EMBEDDING_SERVICE_URL", "")
     if emb_url:
         _embedding_model = True
@@ -1137,11 +1136,18 @@ def load_faqs(entries: list) -> None:
 
     collection = _get_faq_collection()
 
-    # Clear existing entries to reload fresh
+    # Clear existing REGULAR faq entries to reload fresh — but preserve
+    # loc_faq_* entries created by _ingest_location_faqs() so location
+    # Q&A pairs survive the reload cycle.
     if collection.count() > 0:
         existing = collection.get(include=[])
         if existing["ids"]:
-            collection.delete(ids=existing["ids"])
+            regular_ids = [
+                vid for vid in existing["ids"]
+                if not vid.startswith("loc_faq_")
+            ]
+            if regular_ids:
+                collection.delete(ids=regular_ids)
 
     ids_list, questions, answers = zip(*entries)
     embeddings = _embed(list(questions))
