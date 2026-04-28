@@ -7,6 +7,19 @@ link data: http://devapi.surigaocity.gov.ph/api/web_app/public/document_viewer_q
 docker compose down 
 docker compose up --build -d
 
+run local llm:
+ssh marc2250@192.168.160.118
+password: 123
+sudo systemctl start nginx
+sudo systemctl start redis
+
+run ngrok:
+ngrok http 8000 
+
+
+run at host:
+npx next dev
+
 http://127.0.0.1:8000
 
 
@@ -30,3 +43,11 @@ git status
 git add .
 git commit -m 'comment here'
 git push
+
+
+# 1. Clear the corrupted Docker builder cache
+docker builder prune -a -f
+# 2. Rebuild the services completely from scratch
+docker compose build --no-cache
+# 3. Start the containers
+docker compose up -d

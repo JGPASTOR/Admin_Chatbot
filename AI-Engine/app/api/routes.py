@@ -517,12 +517,14 @@ async def rag_sync_locations(request: Request):
     """
     try:
         locations_api_url = settings.LOCATIONS_API_URL
+        logger.info(f"[sync-locations] Using LOCATIONS_API_URL={locations_api_url}")
         if not locations_api_url:
             raise HTTPException(status_code=503, detail="LOCATIONS_API_URL not configured.")
         chunks_added = await asyncio.get_running_loop().run_in_executor(
             None, rag_service._ingest_locations_from_api, locations_api_url
         )
         await rag_service.invalidate_rag_cache()
+        logger.info(f"[sync-locations] Success: {chunks_added} new chunk(s)")
         return RagRebuildResponse(
             success=True,
             message=f"Locations synced — {chunks_added} new chunk(s) added.",
@@ -531,7 +533,9 @@ async def rag_sync_locations(request: Request):
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception(f"[sync-locations] Failed: {e}")
         raise HTTPException(status_code=500, detail=f"Location sync failed: {str(e)}")
+
 
 
 # ── FAQ / Curated Answer Endpoints ────────────────────────────────────────────

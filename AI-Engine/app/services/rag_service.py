@@ -194,29 +194,45 @@ def _detect_section(chunk: str) -> str:
 # ── ChromaDB Connection ───────────────────────────────────────────────────────
 
 def _get_chroma_client():
-    """Get or create the ChromaDB client (HTTP connection to the chroma container)."""
+    """Get or create the ChromaDB client (HTTP connection to the chroma container).
+    
+    Retries up to 5 times with exponential backoff to handle cases where
+    ChromaDB is still starting up (depends_on: service_started doesn't
+    guarantee the HTTP server is ready).
+    """
     global _chroma_client
     if _chroma_client is not None:
-        return _chroma_client
+        # Verify the existing client is still alive
+        try:
+            _chroma_client.heartbeat()
+            return _chroma_client
+        except Exception:
+            logger.warning("[RAG] Existing ChromaDB connection lost — reconnecting...")
+            _chroma_client = None
 
     import chromadb
+    import time
 
     chroma_host = os.environ.get("CHROMA_HOST", "localhost")
-    chroma_port = int(os.environ.get("CHROMA_PORT", "8100"))
+    chroma_port = int(os.environ.get("CHROMA_PORT", "8000"))
 
-    logger.info(f"[RAG] Connecting to ChromaDB at {chroma_host}:{chroma_port}")
-    _chroma_client = chromadb.HttpClient(host=chroma_host, port=chroma_port)
-    
-    # Verify connection with a heartbeat
-    try:
-        _chroma_client.heartbeat()
-        logger.info("[RAG] ChromaDB connection established.")
-    except Exception as e:
-        logger.error(f"[RAG] ChromaDB connection failed: {e}")
-        _chroma_client = None
-        raise
-
-    return _chroma_client
+    max_retries = 5
+    for attempt in range(1, max_retries + 1):
+        logger.info(f"[RAG] Connecting to ChromaDB at {chroma_host}:{chroma_port} (attempt {attempt}/{max_retries})")
+        try:
+            client = chromadb.HttpClient(host=chroma_host, port=chroma_port)
+            client.heartbeat()
+            _chroma_client = client
+            logger.info("[RAG] ChromaDB connection established.")
+            return _chroma_client
+        except Exception as e:
+            if attempt < max_retries:
+                wait = 2 ** attempt  # 2, 4, 8, 16 seconds
+                logger.warning(f"[RAG] ChromaDB connection failed (attempt {attempt}): {e} — retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                logger.error(f"[RAG] ChromaDB connection failed after {max_retries} attempts: {e}")
+                raise
 
 
 def _get_rag_collection():
@@ -361,20 +377,24 @@ def _ingest_locations_from_api(locations_api_url: str) -> int:
     Returns the total number of new chunks added.
     """
     if not locations_api_url:
+        logger.warning("[RAG] _ingest_locations_from_api called with empty URL")
         return 0
 
     try:
+        logger.info(f"[RAG] Fetching locations from {locations_api_url}")
         res = requests.get(locations_api_url, timeout=15)
         res.raise_for_status()
         data = res.json()
     except Exception as e:
         logger.warning(f"[RAG] Could not fetch locations from {locations_api_url}: {e}")
-        return 0
+        raise RuntimeError(f"Could not fetch locations from Admin API: {e}")
 
     rows = data.get("data", [])
     if not rows:
         logger.info("[RAG] No locations found in Admin API.")
         return 0
+
+    logger.info(f"[RAG] Found {len(rows)} location(s) from Admin API")
 
     collection = _get_rag_collection()
 
@@ -382,7 +402,8 @@ def _ingest_locations_from_api(locations_api_url: str) -> int:
     try:
         existing = collection.get(include=["metadatas"])
         existing_filenames = {m.get("filename", "") for m in (existing.get("metadatas") or [])}
-    except Exception:
+    except Exception as e:
+        logger.warning(f"[RAG] Could not read existing filenames: {e}")
         existing_filenames = set()
 
     total_added = 0
@@ -400,22 +421,26 @@ def _ingest_locations_from_api(locations_api_url: str) -> int:
         if not chunks:
             continue
 
-        base_hash   = hashlib.md5(filename.encode()).hexdigest()[:8]
-        start_count = collection.count()
-        chunk_ids   = [f"{base_hash}_{start_count + i}" for i in range(len(chunks))]
-        embeddings  = _embed(chunks)
+        try:
+            base_hash   = hashlib.md5(filename.encode()).hexdigest()[:8]
+            start_count = collection.count()
+            chunk_ids   = [f"{base_hash}_{start_count + i}" for i in range(len(chunks))]
+            embeddings  = _embed(chunks)
 
-        collection.add(
-            ids=chunk_ids,
-            documents=chunks,
-            embeddings=embeddings,
-            metadatas=[
-                {"filename": filename, "section": "General"}
-                for _ in chunks
-            ],
-        )
-        total_added += len(chunks)
-        logger.info(f"[RAG] Ingested location '{loc.get('name')}' — {len(chunks)} chunk(s).")
+            collection.add(
+                ids=chunk_ids,
+                documents=chunks,
+                embeddings=embeddings,
+                metadatas=[
+                    {"filename": filename, "section": "General"}
+                    for _ in chunks
+                ],
+            )
+            total_added += len(chunks)
+            logger.info(f"[RAG] Ingested location '{loc.get('name')}' — {len(chunks)} chunk(s).")
+        except Exception as e:
+            logger.error(f"[RAG] Failed to ingest location '{loc.get('name')}': {e}")
+            continue
 
     logger.info(f"[RAG] Location sync complete. {total_added} new chunk(s) added from {len(rows)} locations.")
     return total_added

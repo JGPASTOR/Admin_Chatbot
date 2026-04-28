@@ -74,7 +74,7 @@ export default function DocumentsPage() {
             } else {
                 docsArray = [parsed];
             }
-            
+
             setImporting(true);
             const now = new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
 
@@ -292,19 +292,6 @@ export default function DocumentsPage() {
                         };
                         reader.readAsText(file);
                     }} style={{ marginBottom: 15 }} />
-                    <div style={{ textAlign: 'center', marginBottom: 15, color: 'var(--text-3)' }}>OR</div>
-                    <label>Paste JSON Text</label>
-                    <textarea 
-                        className="form-control" 
-                        rows={10} 
-                        value={jsonText} 
-                        onChange={e => setJsonText(e.target.value)} 
-                        placeholder={'[\n  {\n    "title": "MEMORANDUM",\n    "subject": "Example",\n    "created_by": "John Doe"\n  }\n]'} 
-                        style={{ resize: 'vertical', fontFamily: 'monospace', fontSize: 12, width: '100%', padding: '10px' }} 
-                    />
-                    <small style={{ color: 'var(--text-3)', display: 'block', marginTop: 8 }}>
-                        You can upload a file or paste a single JSON object. Format with "data" property is supported.
-                    </small>
                 </div>
             </Modal>
 

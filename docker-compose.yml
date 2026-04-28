@@ -102,8 +102,10 @@ services:
       - CONFIDENCE_THRESHOLD=0.4
       - RAG_TOP_K=3
       # ChromaDB vector database connection
+      # NOTE: Inside Docker network, use the container's INTERNAL port (8000),
+      # not the host-mapped port (8100). Port 8100 only works from the host.
       - CHROMA_HOST=chromadb
-      - CHROMA_PORT=8100
+      - CHROMA_PORT=8000
       # Phase 3: shared embedding microservice — workers call this instead
       # of loading sentence-transformers locally (saves ~1.8 GB RAM)
       - EMBEDDING_SERVICE_URL=http://embedding_service:8002
@@ -137,7 +139,7 @@ services:
     command: ["python", "scripts/automator.py"]
     environment:
       - CHROMA_HOST=chromadb
-      - CHROMA_PORT=8100
+      - CHROMA_PORT=8000
       - UPLOAD_DIR=/app/uploads
       - OMP_NUM_THREADS=1 # Good for background huggingface embedding
     volumes:

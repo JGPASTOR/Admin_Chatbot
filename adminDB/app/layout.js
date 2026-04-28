@@ -1,8 +1,5 @@
-import { Inter } from "next/font/google";
 import "./globals.css";
 import AppShell from "../components/AppShell";
-
-const inter = Inter({ subsets: ["latin"], preload: false });
 
 export const metadata = {
   title: "DocTrack Admin — Chatbot AI Document Tracker",
@@ -12,9 +9,10 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body style={{ fontFamily: inter.style.fontFamily }}>
+      <body style={{ fontFamily: "'Inter', sans-serif" }}>
         <AppShell>{children}</AppShell>
       </body>
     </html>
   );
 }
+

@@ -161,24 +161,12 @@ export default function Sidebar() {
                     
                     const badgeCount = item.badge ? pendingCount : 0;
                     return (
-                        <Link key={item.href} href={item.href} style={{
-                            position: 'relative',
-                            display: 'flex', alignItems: 'center', gap: 10,
-                            padding: '10px 12px', borderRadius: 8, marginBottom: 2,
-                            color: active ? '#fff' : 'rgba(255,255,255,0.65)',
-                            background: active ? 'rgba(255,255,255,0.12)' : 'transparent',
-                            textDecoration: 'none', fontWeight: active ? 600 : 400,
-                            fontSize: 13, transition: 'all 0.15s ease',
-                            overflow: 'hidden'
-                        }}>
-                            {active && (
-                                <div style={{
-                                    position: 'absolute',
-                                    left: 0, top: 0, bottom: 0, width: 3,
-                                    background: 'var(--primary-accent)',
-                                }} />
-                            )}
-                            <span style={{ opacity: active ? 1 : 0.7, paddingLeft: 2 }}>{item.icon}</span>
+                        <Link
+                            key={item.href}
+                            href={item.href}
+                            className={`sidebar-link${active ? ' active' : ''}`}
+                        >
+                            <span className="sidebar-icon">{item.icon}</span>
                             <span style={{ flex: 1 }}>{item.label}</span>
                             {badgeCount > 0 && (
                                 <span style={{
