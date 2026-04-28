@@ -704,21 +704,33 @@ def initialize_rag(api_url: str, store_dir: str, locations_api_url: str = "") ->
             from sentence_transformers import SentenceTransformer
             _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
+        # Mark ready as soon as the embedding model is available.
+        # FAQ lookup works independently of the document index, so mobile
+        # users get answers from ChromaDB even if document ingestion fails.
+        _rag_ready = True
+        logger.info("[RAG] Embedding model ready — FAQ lookup enabled.")
+    except Exception as e:
+        logger.error(f"[RAG] Failed to load embedding model: {e}")
+        _rag_ready = False
+        return
+
+    try:
         # Connect to ChromaDB and build index if empty
         _build_index_from_api(api_url)
+    except Exception as e:
+        logger.warning(f"[RAG] Document index build failed (FAQ still works): {e}")
 
+    try:
         # Sync locations (tourist spots, restaurants, shops) — skips already-indexed entries
         _loc_url = locations_api_url or os.environ.get("LOCATIONS_API_URL", "")
         if _loc_url:
             loc_chunks = _ingest_locations_from_api(_loc_url)
             if loc_chunks:
                 logger.info(f"[RAG] Synced {loc_chunks} location chunk(s) into index.")
-
-        _rag_ready = True
-        logger.info("[RAG] Initialization complete.")
     except Exception as e:
-        logger.error(f"[RAG] Failed to initialize: {e}")
-        _rag_ready = False
+        logger.warning(f"[RAG] Location sync failed (FAQ still works): {e}")
+
+    logger.info("[RAG] Initialization complete.")
 
 
 def rebuild_index() -> int:
