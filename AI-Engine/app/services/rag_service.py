@@ -8,6 +8,8 @@ import requests
 from typing import List, Optional, Tuple
 import numpy as np
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 # ── ChromaDB client & collections ─────────────────────────────────────────────
@@ -580,7 +582,7 @@ def rebuild_index() -> int:
         )
 
     # Also re-ingest locations (tourist spots, restaurants, shops)
-    locations_api_url = os.environ.get("LOCATIONS_API_URL", "")
+    locations_api_url = settings.LOCATIONS_API_URL
     loc_chunks = _ingest_locations_from_api(locations_api_url) if locations_api_url else 0
     if loc_chunks:
         logger.info(f"[RAG] Rebuild: synced {loc_chunks} location chunk(s).")
