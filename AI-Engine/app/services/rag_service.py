@@ -336,30 +336,41 @@ def _fetch_all_from_api(list_api_url: str) -> list:
 
 # ── Location Sync ─────────────────────────────────────────────────────────────
 
-def _location_to_text(loc: dict) -> str:
-    """Convert a location row (from /api/locations) to a searchable text blob."""
-    cat_label = {
-        "restaurant": "Restaurant",
-        "shop": "Shop / Store",
-        "tourist_spot": "Tourist Spot",
-        "hotel": "Hotel / Accommodation",
-        "hospital": "Hospital / Clinic",
-        "government": "Government Office",
-        "school": "School / University",
-        "other": "Place of Interest",
-    }.get(loc.get("category", ""), "Place")
+_LOCATION_CAT_LABELS: dict = {
+    "restaurant": "Restaurant",
+    "shop": "Shop / Store",
+    "tourist_spot": "Tourist Spot",
+    "hotel": "Hotel / Accommodation",
+    "hospital": "Hospital / Clinic",
+    "government": "Government Office",
+    "school": "School / University",
+    "other": "Place of Interest",
+}
 
-    lines = [f"{cat_label}: {loc['name']}"]
+
+def _location_to_text(loc: dict) -> str:
+    """Convert a location row (from /api/locations) to a searchable text blob.
+
+    Includes natural-language sentences alongside the metadata fields so that
+    conversational queries like "where is X?" embed closer to the chunk.
+    """
+    cat_label = _LOCATION_CAT_LABELS.get(loc.get("category", ""), "Place")
+    name = loc.get("name", "this location")
+
+    lines = [f"{cat_label}: {name}"]
     if loc.get("category"):
         lines.append(f"Type: {cat_label}")
     if loc.get("address"):
         lines.append(f"Address: {loc['address']}")
+        lines.append(f"{name} is located at {loc['address']}.")
     if loc.get("description"):
         lines.append(f"About: {loc['description']}")
     if loc.get("contact"):
         lines.append(f"Contact: {loc['contact']}")
+        lines.append(f"Contact number of {name}: {loc['contact']}.")
     if loc.get("operating_hours"):
         lines.append(f"Operating Hours: {loc['operating_hours']}")
+        lines.append(f"{name} is open {loc['operating_hours']}.")
     if loc.get("latitude") and loc.get("longitude"):
         lines.append(f"Coordinates: {loc['latitude']}, {loc['longitude']}")
     if loc.get("google_maps_url"):
@@ -367,14 +378,163 @@ def _location_to_text(loc: dict) -> str:
     return "\n".join(lines)
 
 
+def _location_content_hash(loc: dict) -> str:
+    """Stable MD5 hash of a location's mutable fields — used to detect stale RAG chunks."""
+    fields = {k: loc.get(k, "") for k in (
+        "name", "address", "description", "contact",
+        "operating_hours", "category", "latitude", "longitude", "google_maps_url",
+    )}
+    return hashlib.md5(json.dumps(fields, sort_keys=True).encode()).hexdigest()
+
+
+def _ingest_location_faqs(loc: dict) -> int:
+    """
+    Generate structured Q&A pairs for a location and upsert them into the FAQ
+    ChromaDB collection.  This gives mobile users asking short natural-language
+    questions like "where is X?" or "saan ang X?" a fast FAQ-path hit instead
+    of falling through to the slower RAG→LLM path.
+
+    IDs are prefixed ``loc_faq_{loc_id}_`` so they never collide with regular
+    FAQ entries and can be bulk-deleted when a location is removed/updated.
+    """
+    if _embedding_model is None:
+        return 0
+
+    loc_id = str(loc.get("id", ""))
+    name = (loc.get("name") or "").strip()
+    if not name or not loc_id:
+        return 0
+
+    cat_label = _LOCATION_CAT_LABELS.get(loc.get("category", ""), "Place").lower()
+
+    # Build a full answer combining all available fields
+    parts = [f"{name} is a {cat_label} in Surigao City."]
+    if loc.get("address"):
+        parts.append(f"Address: {loc['address']}.")
+    if loc.get("description"):
+        parts.append(loc["description"].strip())
+    if loc.get("operating_hours"):
+        parts.append(f"Operating hours: {loc['operating_hours']}.")
+    if loc.get("contact"):
+        parts.append(f"Contact: {loc['contact']}.")
+    if loc.get("google_maps_url"):
+        parts.append(f"Map: {loc['google_maps_url']}")
+    full_answer = " ".join(parts)
+
+    pairs: list = []  # (question, answer)
+
+    # ── Where / address questions ────────────────────────────────────────────
+    if loc.get("address"):
+        addr = loc["address"]
+        map_str = f" (Map: {loc['google_maps_url']})" if loc.get("google_maps_url") else ""
+        loc_answer = f"{name} is located at {addr}.{map_str}"
+        pairs += [
+            (f"Where is {name}?", loc_answer),
+            (f"Where is {name} located?", loc_answer),
+            (f"What is the address of {name}?", loc_answer),
+            (f"How to get to {name}?", loc_answer),
+            (f"{name} address", loc_answer),
+            (f"{name} location", loc_answer),
+            # Tagalog variants (mobile users in Surigao often ask in Filipino)
+            (f"Saan ang {name}?", loc_answer),
+            (f"Nasaan ang {name}?", loc_answer),
+        ]
+
+    # ── Operating hours questions ────────────────────────────────────────────
+    if loc.get("operating_hours"):
+        hours = loc["operating_hours"]
+        hours_answer = f"{name} is open {hours}."
+        pairs += [
+            (f"What are the operating hours of {name}?", hours_answer),
+            (f"When is {name} open?", hours_answer),
+            (f"What time does {name} open?", hours_answer),
+            (f"{name} hours", hours_answer),
+            (f"{name} open", hours_answer),
+            # Tagalog
+            (f"Anong oras bukas ang {name}?", hours_answer),
+            (f"Kailan bukas ang {name}?", hours_answer),
+        ]
+
+    # ── Contact questions ────────────────────────────────────────────────────
+    if loc.get("contact"):
+        contact = loc["contact"]
+        contact_answer = f"You can contact {name} at {contact}."
+        pairs += [
+            (f"What is the contact number of {name}?", contact_answer),
+            (f"How do I contact {name}?", contact_answer),
+            (f"{name} contact", contact_answer),
+            (f"{name} phone number", contact_answer),
+            # Tagalog
+            (f"Contact number ng {name}?", contact_answer),
+            (f"Numero ng {name}?", contact_answer),
+        ]
+
+    # ── General info questions ───────────────────────────────────────────────
+    pairs += [
+        (f"What is {name}?", full_answer),
+        (f"Tell me about {name}.", full_answer),
+        (f"What can you tell me about {name}?", full_answer),
+        (f"{name}", full_answer),
+        # Tagalog
+        (f"Ano ang {name}?", full_answer),
+    ]
+
+    if not pairs:
+        return 0
+
+    collection = _get_faq_collection()
+    questions = [p[0] for p in pairs]
+    answers   = [p[1] for p in pairs]
+
+    try:
+        embeddings = _embed(questions)
+        for i, (q, a, emb) in enumerate(zip(questions, answers, embeddings)):
+            vid = f"loc_faq_{loc_id}_{i}"
+            collection.upsert(
+                ids=[vid],
+                documents=[q],
+                embeddings=[emb],
+                metadatas=[{
+                    "faq_id": vid,
+                    "question": q,
+                    "answer": a,
+                    "location_id": loc_id,
+                    "location_name": name,
+                }],
+            )
+        logger.info(f"[RAG] Upserted {len(pairs)} FAQ entries for location '{name}'.")
+        return len(pairs)
+    except Exception as e:
+        logger.error(f"[RAG] Failed to ingest location FAQs for '{name}': {e}")
+        return 0
+
+
+def _remove_location_faqs(loc_id: str) -> None:
+    """Delete all FAQ collection entries that belong to a specific location."""
+    try:
+        collection = _get_faq_collection()
+        existing = collection.get(include=[])
+        ids_to_delete = [vid for vid in existing["ids"] if vid.startswith(f"loc_faq_{loc_id}_")]
+        if ids_to_delete:
+            collection.delete(ids=ids_to_delete)
+            logger.info(f"[RAG] Removed {len(ids_to_delete)} FAQ entries for location id={loc_id}.")
+    except Exception as e:
+        logger.warning(f"[RAG] Failed to remove FAQ entries for location id={loc_id}: {e}")
+
+
 def _ingest_locations_from_api(locations_api_url: str) -> int:
     """
-    Fetch all locations from the Admin API and ingest them into ChromaDB.
+    Fetch all locations from the Admin API and sync them into ChromaDB.
 
-    Skips any location whose filename chunk already exists in the collection
-    so this is safe to call multiple times without creating duplicates.
+    Two-pronged sync per location:
+    1. RAG collection  — plain text chunks for vector search fallback.
+       Uses content-hash comparison so updated locations are re-ingested
+       rather than silently keeping stale data.
+    2. FAQ collection  — structured Q&A pairs (where is X?, hours of X?, etc.)
+       stored via upsert so mobile users get a fast FAQ-path hit instead of
+       going through the slower RAG→LLM pipeline.
 
-    Returns the total number of new chunks added.
+    Returns the total number of *new* RAG chunks added.
     """
     if not locations_api_url:
         logger.warning("[RAG] _ingest_locations_from_api called with empty URL")
@@ -398,23 +558,43 @@ def _ingest_locations_from_api(locations_api_url: str) -> int:
 
     collection = _get_rag_collection()
 
-    # Collect filenames already indexed so we don't double-ingest
+    # Read existing location metadata (filename + content_hash) from ChromaDB
     try:
-        existing = collection.get(include=["metadatas"])
-        existing_filenames = {m.get("filename", "") for m in (existing.get("metadatas") or [])}
+        existing_meta = collection.get(include=["metadatas"])
+        existing_filenames: set = set()
+        existing_hashes: dict = {}
+        for m in (existing_meta.get("metadatas") or []):
+            fn = m.get("filename", "")
+            existing_filenames.add(fn)
+            if fn.startswith("location_") and fn not in existing_hashes:
+                existing_hashes[fn] = m.get("content_hash", "")
     except Exception as e:
-        logger.warning(f"[RAG] Could not read existing filenames: {e}")
+        logger.warning(f"[RAG] Could not read existing metadata: {e}")
         existing_filenames = set()
+        existing_hashes = {}
 
     total_added = 0
     for loc in rows:
-        loc_id   = loc.get("id", "")
+        loc_id   = str(loc.get("id", ""))
         loc_name = str(loc.get("name", "unknown")).replace(" ", "_")
         filename = f"location_{loc_id}_{loc_name}"
+        new_hash = _location_content_hash(loc)
 
+        # ── FAQ sync (always upsert — handles new + updated locations) ────────
+        try:
+            _ingest_location_faqs(loc)
+        except Exception as e:
+            logger.warning(f"[RAG] FAQ sync failed for '{loc.get('name')}': {e}")
+
+        # ── RAG chunk sync ─────────────────────────────────────────────────────
         if filename in existing_filenames:
-            logger.debug(f"[RAG] Location '{loc.get('name')}' already indexed — skipping.")
-            continue
+            stored_hash = existing_hashes.get(filename, "")
+            if stored_hash == new_hash:
+                logger.debug(f"[RAG] Location '{loc.get('name')}' unchanged — skipping RAG chunks.")
+                continue
+            # Content changed — remove stale chunks before re-ingesting
+            delete_document_from_index(filename)
+            logger.info(f"[RAG] Location '{loc.get('name')}' changed — re-ingesting RAG chunks.")
 
         text = _location_to_text(loc)
         chunks = _chunk_text(text)
@@ -432,7 +612,7 @@ def _ingest_locations_from_api(locations_api_url: str) -> int:
                 documents=chunks,
                 embeddings=embeddings,
                 metadatas=[
-                    {"filename": filename, "section": "General"}
+                    {"filename": filename, "section": "General", "content_hash": new_hash}
                     for _ in chunks
                 ],
             )
@@ -442,7 +622,7 @@ def _ingest_locations_from_api(locations_api_url: str) -> int:
             logger.error(f"[RAG] Failed to ingest location '{loc.get('name')}': {e}")
             continue
 
-    logger.info(f"[RAG] Location sync complete. {total_added} new chunk(s) added from {len(rows)} locations.")
+    logger.info(f"[RAG] Location sync complete. {total_added} new RAG chunk(s) from {len(rows)} locations.")
     return total_added
 
 
@@ -779,7 +959,20 @@ def _do_retrieve(query: str, top_k: int) -> Optional[str]:
             if matches > 0 or phrase_boost > 0:
                 similarities[i] += (matches * 0.3) + phrase_boost
 
-    # 4. Re-rank by boosted similarity and take top_k
+    # 4. Location-chunk boost — when the query is asking about a place/spot,
+    #    surface location_ chunks above generic document chunks.
+    _LOCATION_QUERY_KW = {
+        "where", "located", "location", "address", "find", "directions",
+        "contact", "hours", "open", "closed", "spot", "place", "visit",
+        "near", "saan", "nasa", "nasaan", "oras", "bukas", "numero",
+    }
+    if any(kw in query_lower for kw in _LOCATION_QUERY_KW):
+        metadatas_list = results.get("metadatas", [[]])[0]
+        for i, meta in enumerate(metadatas_list[:len(docs)]):
+            if meta.get("filename", "").startswith("location_"):
+                similarities[i] += 0.25
+
+    # 5. Re-rank by boosted similarity and take top_k
     ranked = sorted(range(len(docs)), key=lambda i: similarities[i], reverse=True)
 
     min_sim = 0.10 if section_query_match else 0.30

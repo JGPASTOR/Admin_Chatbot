@@ -512,7 +512,8 @@ async def rag_rebuild(request: Request):
 async def rag_sync_locations(request: Request):
     """
     Lightweight sync: re-ingest all locations from the Admin API into ChromaDB.
-    Much faster than a full rebuild — only touches the locations, not documents.
+    Now also syncs structured FAQ Q&A pairs per location (where is X?, hours, contact…)
+    so mobile users get fast FAQ-path answers for location queries.
     Safe to call after adding/editing/deleting a location.
     """
     try:
@@ -527,7 +528,7 @@ async def rag_sync_locations(request: Request):
         logger.info(f"[sync-locations] Success: {chunks_added} new chunk(s)")
         return RagRebuildResponse(
             success=True,
-            message=f"Locations synced — {chunks_added} new chunk(s) added.",
+            message=f"Locations synced — {chunks_added} new RAG chunk(s) added. FAQ entries upserted for all locations.",
             total_chunks=chunks_added,
         )
     except HTTPException:
