@@ -720,17 +720,8 @@ def initialize_rag(api_url: str, store_dir: str, locations_api_url: str = "") ->
     except Exception as e:
         logger.warning(f"[RAG] Document index build failed (FAQ still works): {e}")
 
-    try:
-        # Sync locations (tourist spots, restaurants, shops) — skips already-indexed entries
-        _loc_url = locations_api_url or os.environ.get("LOCATIONS_API_URL", "")
-        if _loc_url:
-            loc_chunks = _ingest_locations_from_api(_loc_url)
-            if loc_chunks:
-                logger.info(f"[RAG] Synced {loc_chunks} location chunk(s) into index.")
-    except Exception as e:
-        logger.warning(f"[RAG] Location sync failed (FAQ still works): {e}")
-
     logger.info("[RAG] Initialization complete.")
+
 
 
 def rebuild_index() -> int:
@@ -797,15 +788,9 @@ def rebuild_index() -> int:
             ],
         )
 
-    # Also re-ingest locations (tourist spots, restaurants, shops)
-    locations_api_url = settings.LOCATIONS_API_URL
-    loc_chunks = _ingest_locations_from_api(locations_api_url) if locations_api_url else 0
-    if loc_chunks:
-        logger.info(f"[RAG] Rebuild: synced {loc_chunks} location chunk(s).")
-
     _rag_ready = True
-    total = len(all_chunks) + loc_chunks
-    logger.info(f"[RAG] Rebuild complete. {total} total chunks ({len(all_chunks)} docs + {loc_chunks} locations).")
+    total = len(all_chunks)
+    logger.info(f"[RAG] Rebuild complete. {total} total chunks indexed.")
     return total
 
 

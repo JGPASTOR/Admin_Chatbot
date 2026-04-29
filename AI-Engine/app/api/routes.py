@@ -511,32 +511,14 @@ async def rag_rebuild(request: Request):
 @limiter.limit("10/minute")
 async def rag_sync_locations(request: Request):
     """
-    Lightweight sync: re-ingest all locations from the Admin API into ChromaDB.
-    Now also syncs structured FAQ Q&A pairs per location (where is X?, hours, contact…)
-    so mobile users get fast FAQ-path answers for location queries.
-    Safe to call after adding/editing/deleting a location.
+    **Deprecated** — Locations are now served live from OpenStreetMap.
+    This endpoint is kept as a no-op for backward compatibility with the admin panel.
     """
-    try:
-        locations_api_url = settings.LOCATIONS_API_URL
-        logger.info(f"[sync-locations] Using LOCATIONS_API_URL={locations_api_url}")
-        if not locations_api_url:
-            raise HTTPException(status_code=503, detail="LOCATIONS_API_URL not configured.")
-        chunks_added = await asyncio.get_running_loop().run_in_executor(
-            None, rag_service._ingest_locations_from_api, locations_api_url
-        )
-        await rag_service.invalidate_rag_cache()
-        logger.info(f"[sync-locations] Success: {chunks_added} new chunk(s)")
-        return RagRebuildResponse(
-            success=True,
-            message=f"Locations synced — {chunks_added} new RAG chunk(s) added. FAQ entries upserted for all locations.",
-            total_chunks=chunks_added,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"[sync-locations] Failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Location sync failed: {str(e)}")
-
+    return RagRebuildResponse(
+        success=True,
+        message="Locations are now powered by OpenStreetMap (live). No sync needed.",
+        total_chunks=0,
+    )
 
 
 # ── FAQ / Curated Answer Endpoints ────────────────────────────────────────────
@@ -2088,3 +2070,28 @@ async def debug_faq_collection(request: Request, query: str = ""):
             result["faq_lookup_error"] = str(e)
 
     return result
+
+
+@router.get("/debug/places", response_model=dict)
+async def debug_places_search(request: Request, query: str = "KFC Surigao"):
+    """
+    **Debug**: Test the OpenStreetMap places search.
+
+    Pass a `query` like "KFC Surigao" or "restaurants near surigao" and
+    see what the Places service returns.
+    """
+    from app.services.places_service import (
+        is_places_query, search_places, format_place_response,
+    )
+
+    is_location = is_places_query(query)
+    places = await search_places(query, max_results=5)
+    formatted = format_place_response(places, query) if places else ""
+
+    return {
+        "query": query,
+        "is_places_query": is_location,
+        "results_count": len(places),
+        "places": places,
+        "formatted_response": formatted,
+    }

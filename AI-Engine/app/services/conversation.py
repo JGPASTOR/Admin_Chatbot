@@ -237,10 +237,23 @@ async def _run_pipeline(
     if "pdid" in entities:
         document = await get_document(entities["pdid"])
 
-    # 5b. Parallel FAQ + RAG retrieval (asyncio.gather fires both simultaneously)
+    # 5a. OpenStreetMap Places lookup — answers location queries for free
+    #     (e.g., "where is KFC?", "restaurants near surigao", "nearest hospital")
+    #     This runs BEFORE RAG so location queries get instant, live answers.
     faq_answer = None
     rag_context = None
-    if settings.USE_RAG and rag_service.is_ready() and topic != "docs" and not document:
+    if topic != "docs" and not document and "pdid" not in entities:
+        try:
+            from app.services.places_service import is_places_query, search_places, format_place_response
+            if is_places_query(message):
+                places = await search_places(message, max_results=3)
+                if places:
+                    faq_answer = format_place_response(places, message)
+        except Exception as _places_err:
+            logger.debug(f"[Places] OSM lookup error (non-fatal): {_places_err}")
+
+    # 5b. Parallel FAQ + RAG retrieval (only if Places didn't already answer)
+    if not faq_answer and settings.USE_RAG and rag_service.is_ready() and topic != "docs" and not document:
         faq_answer, rag_context = await rag_service.retrieve_parallel(
             message, top_k=settings.RAG_TOP_K
         )
