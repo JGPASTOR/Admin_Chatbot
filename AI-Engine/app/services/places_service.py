@@ -136,23 +136,54 @@ def _make_osm_url(lat: float, lon: float, name: str = "") -> str:
     return f"https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=17/{lat}/{lon}"
 
 
-async def search_place_by_name(query: str, max_results: int = 3) -> List[Dict]:
+def _clean_places_query(query: str) -> str:
+    """Remove common conversational words to improve Nominatim search results."""
+    import re
+    stop_words = {
+        "where", "is", "the", "located", "location", "of", "find", "me", "a",
+        "near", "nearest", "nearby", "can", "i", "how", "do", "get", "to",
+        "directions", "address", "contact", "hours", "open", "closed",
+        "saan", "nasaan", "ang", "malapit", "na", "ano", "oras", "bukas", "makikita",
+        "please", "pls", "surigao", "city"
+    }
+    q = re.sub(r'[^\w\s]', '', query.lower())
+    words = q.split()
+    cleaned = [w for w in words if w not in stop_words]
+    if not cleaned:
+        return query.strip()
+    return " ".join(cleaned)
+
+
+async def search_place_by_name(
+    query: str,
+    max_results: int = 3,
+    user_lat: Optional[float] = None,
+    user_lon: Optional[float] = None,
+) -> List[Dict]:
     """
     Search for a specific place by name using Nominatim.
 
     Example: "KFC Surigao City" → returns address, coordinates, map link
     """
-    # Add "Surigao City" context if not already present
-    q = query.strip()
-    if "surigao" not in q.lower():
-        q += ", Surigao City"
+    # Clean the query to remove conversational words
+    q = _clean_places_query(query)
+    # Add "Surigao City" context
+    q += ", Surigao City"
+
+    # If we have the user's real GPS coordinates, build a viewbox centred on them
+    # (±0.05° ≈ ~5 km radius); otherwise fall back to the static Surigao City box.
+    if user_lat is not None and user_lon is not None:
+        delta = 0.05
+        viewbox = f"{user_lon - delta},{user_lat - delta},{user_lon + delta},{user_lat + delta}"
+    else:
+        viewbox = SURIGAO_VIEWBOX
 
     params = {
         "q": q,
         "format": "jsonv2",
         "addressdetails": 1,
         "limit": max_results,
-        "viewbox": SURIGAO_VIEWBOX,
+        "viewbox": viewbox,
         "bounded": 0,  # prefer viewbox but don't exclude outside results
         "countrycodes": "ph",
     }
@@ -200,16 +231,26 @@ async def search_place_by_name(query: str, max_results: int = 3) -> List[Dict]:
 async def search_places_by_category(
     osm_filter: str,
     max_results: int = 5,
+    user_lat: Optional[float] = None,
+    user_lon: Optional[float] = None,
 ) -> List[Dict]:
     """
     Search for places by category using Overpass API.
 
     Example: find all restaurants in Surigao City area.
     """
+    # If the user shared their GPS location, search within ~5 km of them;
+    # otherwise fall back to the static Surigao City bounding box.
+    if user_lat is not None and user_lon is not None:
+        delta = 0.05
+        bbox = f"({user_lat - delta},{user_lon - delta},{user_lat + delta},{user_lon + delta})"
+    else:
+        bbox = SURIGAO_BBOX
+
     query = f"""
     [out:json][timeout:10];
     (
-      {osm_filter}{SURIGAO_BBOX};
+      {osm_filter}{bbox};
     );
     out center {max_results};
     """
@@ -255,7 +296,12 @@ async def search_places_by_category(
     return results
 
 
-async def search_places(message: str, max_results: int = 3) -> List[Dict]:
+async def search_places(
+    message: str,
+    max_results: int = 3,
+    user_lat: Optional[float] = None,
+    user_lon: Optional[float] = None,
+) -> List[Dict]:
     """
     Main entry point — decides whether to do a name search or category search.
 
@@ -270,12 +316,17 @@ async def search_places(message: str, max_results: int = 3) -> List[Dict]:
         has_proper_noun = any(w[0].isupper() and w.lower() not in PLACES_KEYWORDS for w in words if len(w) > 1)
 
         if not has_proper_noun:
-            results = await search_places_by_category(category_filter, max_results=max_results)
+            results = await search_places_by_category(
+                category_filter,
+                max_results=max_results,
+                user_lat=user_lat,
+                user_lon=user_lon,
+            )
             if results:
                 return results
 
     # Fall back to name search via Nominatim
-    return await search_place_by_name(message, max_results=max_results)
+    return await search_place_by_name(message, max_results=max_results, user_lat=user_lat, user_lon=user_lon)
 
 
 def format_place_response(places: List[Dict], query: str = "") -> str:

@@ -185,6 +185,8 @@ async def _run_pipeline(
     message: str,
     session_id: Optional[str] = None,
     topic: Optional[str] = None,
+    user_lat: Optional[float] = None,
+    user_lon: Optional[float] = None,
 ) -> PipelineResult:
     """
     Shared pipeline logic used by both process_message and stream_message.
@@ -250,24 +252,12 @@ async def _run_pipeline(
         try:
             from app.services.places_service import is_places_query, search_places, format_place_response, _detect_category
             if is_places_query(message):
-                places = await search_places(message, max_results=3)
+                places = await search_places(message, max_results=3, user_lat=user_lat, user_lon=user_lon)
                 if places:
                     faq_answer = format_place_response(places, message)
                 else:
                     # OSM returned nothing — mark it so the fallback response can be smarter.
-                    # For named places (no category), answer immediately.
-                    # For category queries (hotels, restaurants, etc.), let RAG run first in case
-                    # the admin has uploaded relevant FAQ data.
                     _places_searched = True
-                    if not _detect_category(message):
-                        faq_answer = (
-                            "I searched OpenStreetMap but couldn't find that place in Surigao City. 🔍\n\n"
-                            "It may not be listed on the map yet. You can try:\n\n"
-                            "- 🗺️ Searching directly on [OpenStreetMap](https://www.openstreetmap.org)\n"
-                            "- 📍 Checking Google Maps or asking locals\n"
-                            "- 🏛️ Contacting the **City Information Office** for local business directories\n\n"
-                            "Is there anything else I can help you with?"
-                        )
         except Exception as _places_err:
             logger.debug(f"[Places] OSM lookup error (non-fatal): {_places_err}")
 
@@ -341,6 +331,8 @@ async def process_message(
     session_id: Optional[str] = None,
     language: str = "en",
     topic: Optional[str] = None,
+    user_lat: Optional[float] = None,
+    user_lon: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Process a user message through the full AI pipeline.
@@ -361,7 +353,7 @@ async def process_message(
         Dict with reply, session_id, intent, confidence, entities
     """
     t0 = time.monotonic()
-    p = await _run_pipeline(db, message, session_id, topic)
+    p = await _run_pipeline(db, message, session_id, topic, user_lat=user_lat, user_lon=user_lon)
 
     # ── FAQ short-circuit: curated answer available → return it directly ──
     if p.faq_answer:
@@ -408,19 +400,7 @@ async def process_message(
             print(f"LLM generation failed, falling back to template: {e}")
 
     if not reply:
-        # OSM was tried for a category query (e.g. hotels) but found nothing, and RAG also
-        # has no answer — show a targeted map-not-found message instead of the generic template.
-        if p.places_searched and not p.rag_context:
-            reply = (
-                "I searched OpenStreetMap but couldn't find any matching places in Surigao City. 🔍\n\n"
-                "They may not be listed on the map yet. You can try:\n\n"
-                "- 🗺️ Searching directly on [OpenStreetMap](https://www.openstreetmap.org)\n"
-                "- 📍 Checking Google Maps or asking locals\n"
-                "- 🏛️ Contacting the **City Tourism Office** or **City Information Office** for recommendations\n\n"
-                "Is there anything else I can help you with?"
-            )
-        else:
-            reply = generate_response(p.intent, p.entities, p.document, p.context, topic=topic, language=language, rag_context=p.rag_context)
+        reply = generate_response(p.intent, p.entities, p.document, p.context, topic=topic, language=language, rag_context=p.rag_context)
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     src = "llm" if used_llm else "rag_template"
@@ -461,12 +441,14 @@ async def stream_message(
     session_id: Optional[str] = None,
     language: str = "en",
     topic: Optional[str] = None,
+    user_lat: Optional[float] = None,
+    user_lon: Optional[float] = None,
 ):
     """
     Process a user message and yield Server-Sent Events (SSE).
     """
     t0 = time.monotonic()
-    p = await _run_pipeline(db, message, session_id, topic)
+    p = await _run_pipeline(db, message, session_id, topic, user_lat=user_lat, user_lon=user_lon)
 
     # First yield the metadata (intent, entities, session_id)
     metadata = {
@@ -560,17 +542,7 @@ async def stream_message(
     # If no LLM streaming occurred/succeeded, fallback to template
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     if not full_reply:
-        if p.places_searched and not p.rag_context:
-            full_reply = (
-                "I searched OpenStreetMap but couldn't find any matching places in Surigao City. 🔍\n\n"
-                "They may not be listed on the map yet. You can try:\n\n"
-                "- 🗺️ Searching directly on [OpenStreetMap](https://www.openstreetmap.org)\n"
-                "- 📍 Checking Google Maps or asking locals\n"
-                "- 🏛️ Contacting the **City Tourism Office** or **City Information Office** for recommendations\n\n"
-                "Is there anything else I can help you with?"
-            )
-        else:
-            full_reply = generate_response(p.intent, p.entities, p.document, p.context, topic=topic, language=language, rag_context=p.rag_context)
+        full_reply = generate_response(p.intent, p.entities, p.document, p.context, topic=topic, language=language, rag_context=p.rag_context)
         done_meta = json.dumps({
             "session_id": p.session.id,
             "intent": p.intent,
