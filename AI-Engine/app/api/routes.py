@@ -107,6 +107,8 @@ async def chat(request: Request, chat_request: ChatRequest, db: DBSession = Depe
             session_id=chat_request.session_id,
             language=chat_request.language,
             topic=chat_request.topic,
+            user_lat=chat_request.latitude,
+            user_lon=chat_request.longitude,
         )
         return ChatResponse(**result)
     except Exception as e:
@@ -146,7 +148,7 @@ async def topic_select(request: Request, payload: TopicSelectRequest, db: DBSess
     )
 
 
-async def _stream_with_error_handling(db, message, session_id, language, topic):
+async def _stream_with_error_handling(db, message, session_id, language, topic, user_lat=None, user_lon=None):
     """Wrap stream_message to catch and surface streaming errors as SSE events."""
     try:
         async for chunk in stream_message(
@@ -155,6 +157,8 @@ async def _stream_with_error_handling(db, message, session_id, language, topic):
             session_id=session_id,
             language=language,
             topic=topic,
+            user_lat=user_lat,
+            user_lon=user_lon,
         ):
             yield chunk
     except Exception as e:
@@ -177,6 +181,8 @@ async def chat_stream(request: Request, chat_request: ChatRequest, db: DBSession
             session_id=chat_request.session_id,
             language=chat_request.language,
             topic=chat_request.topic,
+            user_lat=chat_request.latitude,
+            user_lon=chat_request.longitude,
         ),
         media_type="text/event-stream"
     )

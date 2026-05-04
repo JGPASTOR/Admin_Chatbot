@@ -10,6 +10,8 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(None, description="Session ID for multi-turn conversation. Omit to start a new session.")
     language: str = Field(default="en", description="Language preference (e.g. 'en', 'tl')")
     topic: Optional[str] = Field(None, description="User's selected topic: 'docs' (Document Tracking) or 'lgu' (LGU Services). Enforces strict intent routing.")
+    latitude: Optional[float] = Field(None, description="User's GPS latitude from the browser geolocation API")
+    longitude: Optional[float] = Field(None, description="User's GPS longitude from the browser geolocation API")
 
     model_config = {
         "json_schema_extra": {
