@@ -41,7 +41,7 @@ def get_or_create_session(db: DBSession, session_id: Optional[str] = None) -> Se
     if session_id:
         session = db.query(Session).filter(Session.id == session_id).first()
         if session:
-            session.last_active = datetime.now(timezone.utc)
+            session.last_active = datetime.now(timezone.utc)  # type: ignore
             db.commit()
             return session
 
@@ -97,9 +97,9 @@ def flag_unknown_query(
 
 def update_session_context(db: DBSession, session: Session, key: str, value: Any):
     """Update a key in the session context JSON."""
-    ctx = dict(session.context) if session.context else {}
+    ctx = dict(session.context) if session.context else {}  # type: ignore
     ctx[key] = value
-    session.context = ctx
+    session.context = ctx  # type: ignore
     db.commit()
 
 
@@ -143,12 +143,12 @@ async def _auto_cache_faq(question: str, answer: str) -> None:
         db.refresh(entry)
 
         # Hot-load the main question into ChromaDB immediately
-        rag_service.add_faq_to_cache(entry.id, entry.question, entry.answer)
+        rag_service.add_faq_to_cache(entry.id, entry.question, entry.answer)  # type: ignore
 
         # Generate question variants in a thread executor (LLM call is sync)
         llm_url = settings.LLM_SERVICE_URL
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
+        await loop.run_in_executor(  # type: ignore
             None,
             rag_service.store_faq_variants_sync,
             entry.id, question, answer, llm_url, 4,
@@ -220,7 +220,7 @@ async def _run_pipeline(
             intent = "lgu_query"
 
     # 4. Multi-turn context: check if we're waiting for a PDID
-    context = dict(session.context) if session.context else {}
+    context = dict(session.context) if session.context else {}  # type: ignore
     pending_intent = context.get("pending_intent")
 
     # If the user provides a PDID (or just a number) and we were waiting for one
@@ -326,7 +326,7 @@ async def _run_pipeline(
         context=context,
         document=document,
         rag_context=rag_context,
-        faq_answer=faq_answer,
+        faq_answer=faq_answer,  # type: ignore
         places_searched=_places_searched,
     )
 
