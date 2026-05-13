@@ -1,11 +1,7 @@
 {
   "pythonVersion": "3.11",
-  "venvPath": ".",
-  "venv": ".venv",
-  "extraPaths": [
-    "./.venv/lib/python3.11/site-packages"
-  ],
   "typeCheckingMode": "off",
-  "reportMissingModuleSource": "none"
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false,
+  "reportGeneralClassIssues": false
 }
-

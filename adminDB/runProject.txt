@@ -3,7 +3,7 @@ ngrok http 8000
 
 link data: http://devapi.surigaocity.gov.ph/api/web_app/public/document_viewer_qrcode/?t1.id=1002
 
-
+Run Docker at Host:
 docker compose down 
 docker compose up --build -d
 

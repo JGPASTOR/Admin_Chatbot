@@ -5,8 +5,8 @@ import re
 import json
 import logging
 import requests
-from typing import List, Optional, Tuple
-import numpy as np
+from functools import partial
+from typing import List, Optional, Tuple, Any
 
 from app.config import settings
 
@@ -44,7 +44,7 @@ async def connect_redis(redis_url: str) -> None:
     try:
         import redis.asyncio as aioredis
         _redis = aioredis.from_url(redis_url, decode_responses=True)
-        await _redis.ping()
+        await _redis.ping()  # type: ignore[misc]
         logger.info("[RAG] Redis cache connected.")
     except Exception as e:
         logger.warning(f"[RAG] Redis connection failed — caching disabled: {e}")
@@ -236,12 +236,23 @@ def _get_chroma_client():
 
 
 def _get_rag_collection():
-    """Get or create the RAG document chunks collection."""
+    """Get or create the RAG document chunks collection.
+
+    Validates the cached reference with a lightweight .count() call.
+    If the reference is stale (e.g. ChromaDB restarted and assigned a new
+    UUID to the collection), the cache is cleared and re-fetched.
+    """
     global _rag_collection
     if _rag_collection is not None:
-        return _rag_collection
+        try:
+            _rag_collection.count()  # validates the UUID is still valid
+            return _rag_collection
+        except Exception:
+            logger.warning("[RAG] Cached rag_documents collection is stale — refreshing...")
+            _rag_collection = None
 
     client = _get_chroma_client()
+    assert client is not None, "ChromaDB client failed to initialize"
     _rag_collection = client.get_or_create_collection(
         name="rag_documents",
         metadata={"hnsw:space": "cosine"},
@@ -251,18 +262,42 @@ def _get_rag_collection():
 
 
 def _get_faq_collection():
-    """Get or create the FAQ collection."""
+    """Get or create the FAQ collection.
+
+    Validates the cached reference with a lightweight .count() call.
+    If the reference is stale (e.g. ChromaDB restarted and assigned a new
+    UUID to the collection), the cache is cleared and re-fetched.
+    """
     global _faq_collection
     if _faq_collection is not None:
-        return _faq_collection
+        try:
+            _faq_collection.count()  # validates the UUID is still valid
+            return _faq_collection
+        except Exception:
+            logger.warning("[RAG] Cached faq_entries collection is stale — refreshing...")
+            _faq_collection = None
 
     client = _get_chroma_client()
+    assert client is not None, "ChromaDB client failed to initialize"
     _faq_collection = client.get_or_create_collection(
         name="faq_entries",
         metadata={"hnsw:space": "cosine"},
     )
     logger.info(f"[RAG] Collection 'faq_entries' ready ({_faq_collection.count()} entries)")
     return _faq_collection
+
+
+def _refresh_collections() -> None:
+    """Force-reset all cached ChromaDB references.
+
+    Called when a query hits a stale-UUID error so the next attempt
+    re-fetches valid collection objects from the server.
+    """
+    global _chroma_client, _rag_collection, _faq_collection
+    _chroma_client = None
+    _rag_collection = None
+    _faq_collection = None
+    logger.info("[RAG] All cached ChromaDB references cleared.")
 
 
 # ── Embedding Helper ──────────────────────────────────────────────────────────
@@ -715,7 +750,7 @@ def initialize_rag(api_url: str, store_dir: str, locations_api_url: str = "") ->
         return
 
     try:
-        # Connect to ChromaDB and build index if empty
+       
         _build_index_from_api(api_url)
     except Exception as e:
         logger.warning(f"[RAG] Document index build failed (FAQ still works): {e}")
@@ -729,7 +764,7 @@ def rebuild_index() -> int:
     Force a full rebuild of the RAG index by fetching all documents from the Admin API.
     Returns the number of indexed chunks.
     """
-    global _rag_ready, _embedding_model
+    global _rag_ready, _embedding_model, _rag_collection
 
     if not _store_dir:
         raise RuntimeError("[RAG] Store directory not set. Was initialize_rag called?")
@@ -738,28 +773,28 @@ def rebuild_index() -> int:
 
     logger.info(f"[RAG] Rebuilding index from {api_url} ...")
 
-    # Delete and recreate collection to start fresh
+
     client = _get_chroma_client()
+    assert client is not None, "ChromaDB client failed to initialize"
     try:
         client.delete_collection("rag_documents")
     except Exception:
         pass
 
-    global _rag_collection
-    _rag_collection = None  # force re-creation
+    _rag_collection = None 
     collection = _get_rag_collection()
 
     doc_list = _fetch_all_from_api(api_url)
 
     if not doc_list:
-        _rag_ready = True  # ready but empty
+        _rag_ready = True 
         logger.info("[RAG] Rebuild complete: No documents found. Cleared index.")
         return 0
 
     all_chunks = []
     all_filenames = []
     for original_name, text in doc_list:
-        doc_chunks = _chunk_text(text)  # uses global CHUNK_SIZE=600, OVERLAP=150
+        doc_chunks = _chunk_text(text)  
         all_chunks.extend(doc_chunks)
         all_filenames.extend([original_name] * len(doc_chunks))
 
@@ -770,7 +805,6 @@ def rebuild_index() -> int:
         from sentence_transformers import SentenceTransformer
         _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
-    # Add in batches
     batch_size = 100
     for i in range(0, len(all_chunks), batch_size):
         batch_chunks = all_chunks[i:i + batch_size]
@@ -812,7 +846,7 @@ def add_document_to_index(text: str, filename: str = "unknown") -> int:
     if not _rag_ready:
         raise RuntimeError("[RAG] RAG is not initialized. Call initialize_rag() first.")
 
-    new_chunks = _chunk_text(text)  # uses global CHUNK_SIZE=600, OVERLAP=150
+    new_chunks = _chunk_text(text) 
     if not new_chunks:
         logger.warning(f"[RAG] No chunks extracted from '{filename}'. Skipping.")
         return 0
@@ -820,7 +854,7 @@ def add_document_to_index(text: str, filename: str = "unknown") -> int:
     collection = _get_rag_collection()
     new_embeddings = _embed(new_chunks)
 
-    # Generate unique IDs using filename + index
+
     base_hash = hashlib.md5(filename.encode()).hexdigest()[:8]
     existing_count = collection.count()
     chunk_ids = [f"{base_hash}_{existing_count + i}" for i in range(len(new_chunks))]
@@ -852,7 +886,6 @@ def delete_document_from_index(filename: str) -> int:
 
     collection = _get_rag_collection()
 
-    # Query ChromaDB for all chunks belonging to this filename
     results = collection.get(
         where={"filename": filename},
         include=[],
@@ -868,38 +901,54 @@ def delete_document_from_index(filename: str) -> int:
     return count
 
 
-def _do_retrieve(query: str, top_k: int) -> Optional[str]:
+def _do_retrieve(query: str, top_k: int, _retried: bool = False) -> Optional[str]:
     """
     Core (synchronous) ChromaDB retrieval with keyword boosting and re-ranking.
     Called by both retrieve_context (sync wrapper) and the async retrieve_parallel.
+
+    If a stale-collection error occurs ("does not exist"), refreshes the cached
+    references and retries once — so container restarts never require a manual resync.
     """
-    collection = _get_rag_collection()
-    if collection.count() == 0:
+    try:
+        collection = _get_rag_collection()
+        if collection.count() == 0:
+            return None
+    except Exception as e:
+        if not _retried:
+            logger.warning(f"[RAG] Collection access failed, refreshing: {e}")
+            _refresh_collections()
+            return _do_retrieve(query, top_k, _retried=True)
+        logger.error(f"[RAG] Collection access failed after retry: {e}")
         return None
 
     query_lower = query.lower()
 
-    # 1. Embed the query
     query_emb = _embed([query])
 
-    # Request more results than needed so we can re-rank with keyword boosting
     fetch_k = min(top_k * 5, collection.count())
 
-    results = collection.query(
-        query_embeddings=query_emb,
-        n_results=fetch_k,
-        include=["documents", "distances", "metadatas"],
-    )
+    try:
+        results = collection.query(
+            query_embeddings=query_emb,
+            n_results=fetch_k,
+            include=["documents", "distances", "metadatas"],
+        )
+    except Exception as e:
+        if not _retried:
+            logger.warning(f"[RAG] Query failed (stale collection?), refreshing: {e}")
+            _refresh_collections()
+            return _do_retrieve(query, top_k, _retried=True)
+        logger.error(f"[RAG] Query failed after retry: {e}")
+        return None
 
     if not results["documents"] or not results["documents"][0]:
         return None
 
     docs = results["documents"][0]
-    # ChromaDB returns distances (for cosine: distance = 1 - similarity)
+   
     distances = results["distances"][0]
     similarities = [1.0 - d for d in distances]
 
-    # 2. Section-targeted boosting
     section_query_match = re.search(r'\bsection\s+(\d+)\b', query_lower)
     if section_query_match:
         target_section = section_query_match.group(1)
@@ -921,7 +970,6 @@ def _do_retrieve(query: str, top_k: int) -> Optional[str]:
                 if other_matches and target_section not in other_matches:
                     similarities[i] -= 0.5
 
-    # 3. Hybrid Keyword Boost (Sparse Retrieval)
     stop_words = {
         "the", "and", "for", "with", "from", "that", "this", "what",
         "where", "how", "who", "when", "why", "are", "you", "can",
@@ -955,8 +1003,6 @@ def _do_retrieve(query: str, top_k: int) -> Optional[str]:
             if matches > 0 or phrase_boost > 0:
                 similarities[i] += (matches * 0.3) + phrase_boost
 
-    # 4. Location-chunk boost — when the query is asking about a place/spot,
-    #    surface location_ chunks above generic document chunks.
     _LOCATION_QUERY_KW = {
         "where", "located", "location", "address", "find", "directions",
         "contact", "hours", "open", "closed", "spot", "place", "visit",
@@ -968,7 +1014,6 @@ def _do_retrieve(query: str, top_k: int) -> Optional[str]:
             if meta.get("filename", "").startswith("location_"):
                 similarities[i] += 0.25
 
-    # 5. Re-rank by boosted similarity and take top_k
     ranked = sorted(range(len(docs)), key=lambda i: similarities[i], reverse=True)
 
     min_sim = 0.10 if section_query_match else 0.30
@@ -981,7 +1026,6 @@ def _do_retrieve(query: str, top_k: int) -> Optional[str]:
     if not result_docs:
         return None
 
-    # Clean decorative lines from retrieved chunks before sending to LLM
     result_docs = [_clean_text(d) for d in result_docs]
     result_docs = [d for d in result_docs if d]
 
@@ -1000,13 +1044,10 @@ def retrieve_context(query: str, top_k: int = 3) -> Optional[str]:
     if not _rag_ready or _embedding_model is None:
         return None
 
-    # ── Try Redis cache (best-effort; never blocks on failure) ────────────────
     cache_key = _make_rag_cache_key(query)
     if _redis is not None:
         try:
-            # Use asyncio.run_coroutine_threadsafe / get_event_loop trick only
-            # when called from a sync context.  If we're inside an async context
-            # the caller should use retrieve_context_async instead.
+            
             loop = None
             try:
                 loop = asyncio.get_running_loop()
@@ -1014,17 +1055,16 @@ def retrieve_context(query: str, top_k: int = 3) -> Optional[str]:
                 pass
 
             if loop is None:
-                # Pure sync context — safe to use asyncio.run
+            
                 raw = asyncio.run(_redis.get(cache_key))
                 if raw:
                     logger.debug(f"[RAG] Cache hit for key {cache_key[:32]}")
                     return json.loads(raw)
         except Exception:
-            pass  # cache errors are non-fatal
+            pass 
 
     result = _do_retrieve(query, top_k)
 
-    # ── Store in Redis (best-effort) ──────────────────────────────────────────
     if result is not None and _redis is not None:
         try:
             loop = None
@@ -1052,7 +1092,6 @@ async def retrieve_context_async(query: str, top_k: int = 3) -> Optional[str]:
 
     cache_key = _make_rag_cache_key(query)
 
-    # ── Check Redis cache ─────────────────────────────────────────────────────
     if _redis is not None:
         try:
             raw = await _redis.get(cache_key)
@@ -1062,11 +1101,10 @@ async def retrieve_context_async(query: str, top_k: int = 3) -> Optional[str]:
         except Exception:
             pass
 
-    # ── Run synchronous ChromaDB retrieval in a thread ───────────────────────
+ 
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, _do_retrieve, query, top_k)
+    result = await loop.run_in_executor(None, partial(_do_retrieve, query, top_k))
 
-    # ── Store result in Redis ─────────────────────────────────────────────────
     if result is not None and _redis is not None:
         try:
             await _redis.setex(cache_key, _RAG_CACHE_TTL, json.dumps(result))
@@ -1082,7 +1120,7 @@ async def _faq_lookup_async(query: str) -> Optional[str]:
     Runs the blocking call in an executor so it doesn't stall the event loop.
     """
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, faq_lookup, query)
+    return await loop.run_in_executor(None, partial(faq_lookup, query))
 
 
 async def retrieve_parallel(
@@ -1113,11 +1151,6 @@ def is_ready() -> bool:
     return _rag_ready
 
 
-# ── FAQ / Curated Answer Cache ────────────────────────────────────────────────
-# Stored in a separate ChromaDB collection.
-# Questions are embedded once; at query time we do a cosine-similarity check
-# and return the stored answer directly if similarity ≥ FAQ_THRESHOLD.
-
 
 def load_faqs(entries: list) -> None:
     """
@@ -1133,9 +1166,6 @@ def load_faqs(entries: list) -> None:
 
     collection = _get_faq_collection()
 
-    # Clear existing REGULAR faq entries to reload fresh — but preserve
-    # loc_faq_* entries created by _ingest_location_faqs() so location
-    # Q&A pairs survive the reload cycle.
     if collection.count() > 0:
         existing = collection.get(include=[])
         if existing["ids"]:
@@ -1149,7 +1179,7 @@ def load_faqs(entries: list) -> None:
     ids_list, questions, answers = zip(*entries)
     embeddings = _embed(list(questions))
 
-    # Add in batches
+
     batch_size = 100
     for i in range(0, len(ids_list), batch_size):
         batch_ids = [f"faq_{faq_id}" for faq_id in ids_list[i:i + batch_size]]
@@ -1224,12 +1254,12 @@ def remove_faq_from_cache(faq_id: int) -> None:
     collection = _get_faq_collection()
 
     try:
-        # Delete main entry
+       
         collection.delete(ids=[f"faq_{faq_id}"])
     except Exception:
         pass
 
-    # Delete any variant entries (faq_{id}_var_0, faq_{id}_var_1, ...)
+ 
     try:
         existing = collection.get(include=[])
         variant_ids = [vid for vid in existing["ids"] if vid.startswith(f"faq_{faq_id}_var_")]
@@ -1241,7 +1271,7 @@ def remove_faq_from_cache(faq_id: int) -> None:
     logger.info(f"[FAQ] Removed FAQ id={faq_id} and its variants from ChromaDB.")
 
 
-def faq_lookup(query: str) -> Optional[str]:
+def faq_lookup(query: str, _retried: bool = False) -> Optional[str]:
     """
     Check if the query semantically matches any curated FAQ question.
     Returns the stored answer if similarity >= FAQ_THRESHOLD, else None.
@@ -1250,12 +1280,23 @@ def faq_lookup(query: str) -> Optional[str]:
     question also mentions "section N" get a +0.10 boost; entries that mention
     a *different* section get a -0.15 penalty. No hard-skip — avoids missing
     FAQs whose question text doesn't include the section number explicitly.
+
+    Auto-recovers from stale ChromaDB collection references by refreshing
+    cached objects and retrying once on failure.
     """
     if _embedding_model is None:
         return None
 
-    collection = _get_faq_collection()
-    if collection.count() == 0:
+    try:
+        collection = _get_faq_collection()
+        if collection.count() == 0:
+            return None
+    except Exception as e:
+        if not _retried:
+            logger.warning(f"[FAQ] Collection access failed, refreshing: {e}")
+            _refresh_collections()
+            return faq_lookup(query, _retried=True)
+        logger.error(f"[FAQ] Collection access failed after retry: {e}")
         return None
 
     try:
@@ -1270,9 +1311,6 @@ def faq_lookup(query: str) -> Optional[str]:
         if not results["metadatas"] or not results["metadatas"][0]:
             return None
 
-        # Section-number guard (soft — penalises mismatches, does NOT hard-skip)
-        # Hard-skipping caused FAQs without "Section N" in the question text to be
-        # completely invisible even when the user explicitly asked about that section.
         section_match = re.search(r'\bsection\s+(\d+)\b', query.lower())
         query_section_num = section_match.group(1) if section_match else None
 
@@ -1285,19 +1323,14 @@ def faq_lookup(query: str) -> Optional[str]:
             if similarity < FAQ_THRESHOLD:
                 continue
 
-            # Soft section-number signal — boosts exact match, lightly penalises
-            # wrong section.  NOT a hard gate: a -0.10 nudge should not eliminate
-            # a 0.75 match just because the user mentioned "section 3".
             if query_section_num is not None:
                 faq_question = meta.get("question", "")
                 faq_section = re.search(r'\bsection\s+(\d+)\b', faq_question.lower())
                 if faq_section and faq_section.group(1) == query_section_num:
-                    similarity += 0.10  # boost exact section match
+                    similarity += 0.10  
                 elif faq_section:
-                    similarity -= 0.10  # gentle nudge down for wrong section (was -0.15)
-            # ── No second threshold gate here ─────────────────────────────────
-            # The section penalty is a preference signal, not a disqualifier.
-            # We pick the highest-scoring entry that cleared the initial gate.
+                    similarity -= 0.10 
+        
 
             if similarity > best_score:
                 best_score = similarity
@@ -1309,7 +1342,11 @@ def faq_lookup(query: str) -> Optional[str]:
 
         return None
     except Exception as e:
-        logger.error(f"[FAQ] Lookup failed: {e}")
+        if not _retried:
+            logger.warning(f"[FAQ] Lookup failed (stale collection?), refreshing: {e}")
+            _refresh_collections()
+            return faq_lookup(query, _retried=True)
+        logger.error(f"[FAQ] Lookup failed after retry: {e}")
         return None
 
 
@@ -1374,7 +1411,7 @@ def store_faq_variants_sync(faq_id: int, question: str, answer: str, llm_url: st
         )
         res.raise_for_status()
         raw = res.json().get("response", "").strip()
-        # Strip markdown code fences if present
+      
         raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("` \n")
         m = re.search(r'\[[\s\S]*?\]', raw)
         variants = _json.loads(m.group(0) if m else raw)

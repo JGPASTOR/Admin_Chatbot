@@ -263,11 +263,17 @@ async def _run_pipeline(
 
     # 5b. Parallel FAQ + RAG retrieval (only if Places didn't already answer)
     if not faq_answer and settings.USE_RAG and rag_service.is_ready() and topic != "docs" and not document:
-        faq_answer, rag_context = await rag_service.retrieve_parallel(
-            message, top_k=settings.RAG_TOP_K
-        )
-        # If FAQ already matched, we don't need the RAG context
-        if faq_answer:
+        try:
+            faq_answer, rag_context = await rag_service.retrieve_parallel(
+                message, top_k=settings.RAG_TOP_K
+            )
+            # If FAQ already matched, we don't need the RAG context
+            if faq_answer:
+                rag_context = None
+        except Exception as _rag_err:
+            # ChromaDB completely unavailable — degrade gracefully to template
+            logger.warning(f"[Pipeline] RAG/FAQ retrieval failed (non-fatal): {_rag_err}")
+            faq_answer = None
             rag_context = None
 
     # Keyword fallback: semantic FAQ failed + RAG found nothing
