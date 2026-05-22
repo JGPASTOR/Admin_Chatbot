@@ -517,13 +517,20 @@ async def rag_rebuild(request: Request):
 @limiter.limit("10/minute")
 async def rag_sync_locations(request: Request):
     """
-    **Deprecated** — Locations are now served live from OpenStreetMap.
-    This endpoint is kept as a no-op for backward compatibility with the admin panel.
+    Sync Admin Dashboard locations into the live RAG and FAQ collections.
     """
+    try:
+        total_chunks = rag_service.sync_locations_from_api(settings.LOCATIONS_API_URL)
+        await rag_service.invalidate_rag_cache()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Location sync failed: {str(e)}")
+
     return RagRebuildResponse(
         success=True,
-        message="Locations are now powered by OpenStreetMap (live). No sync needed.",
-        total_chunks=0,
+        message="Successfully synced Admin locations into the AI knowledge base.",
+        total_chunks=total_chunks,
     )
 
 

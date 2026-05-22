@@ -13,6 +13,7 @@ Handles:
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -178,6 +179,179 @@ class PipelineResult:
     rag_context: Optional[str]
     faq_answer: Optional[str] = field(default=None)  # curated answer — returned directly if set
     places_searched: bool = field(default=False)      # True when OSM was tried but returned no results
+    places: list[dict] = field(default_factory=list)  # structured place results for mobile route cards
+
+
+_LOCATION_STOP_WORDS = {
+    "where", "is", "the", "located", "location", "of", "find", "me", "a",
+    "near", "nearest", "nearby", "can", "i", "how", "do", "get", "to",
+    "directions", "direction", "address", "contact", "hours", "open",
+    "closed", "saan", "nasaan", "ang", "malapit", "na", "ano", "oras",
+    "bukas", "makikita", "please", "pls", "surigao", "city", "route",
+    "map",
+}
+
+
+def _parse_coords_from_maps_url(url: str) -> tuple[Optional[float], Optional[float]]:
+    """Best-effort coordinate extraction from common Google Maps URL formats."""
+    if not url:
+        return None, None
+
+    patterns = [
+        r"@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)",
+        r"!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)",
+        r"[?&](?:q|query|ll)=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, url)
+        if m:
+            return float(m.group(1)), float(m.group(2))
+    return None, None
+
+
+def _place_category_for_mobile(category: str) -> str:
+    mapping = {
+        "shop": "shopping",
+        "government": "tourist_spot",
+        "hospital": "tourist_spot",
+        "school": "tourist_spot",
+        "other": "tourist_spot",
+    }
+    return mapping.get(category or "", category or "tourist_spot")
+
+
+def _place_emoji(category: str) -> str:
+    return {
+        "restaurant": "🍽️",
+        "shop": "🛍️",
+        "tourist_spot": "📍",
+        "hotel": "🏨",
+        "hospital": "🏥",
+        "government": "🏛️",
+        "school": "🏫",
+    }.get(category or "", "📍")
+
+
+def _location_to_mobile_place(loc: dict) -> Optional[dict]:
+    lat = loc.get("latitude")
+    lon = loc.get("longitude")
+    try:
+        lat_f = float(lat) if lat not in (None, "") else None
+        lon_f = float(lon) if lon not in (None, "") else None
+    except (TypeError, ValueError):
+        lat_f, lon_f = None, None
+
+    if lat_f is None or lon_f is None:
+        lat_f, lon_f = _parse_coords_from_maps_url(loc.get("google_maps_url") or "")
+
+    if lat_f is None or lon_f is None:
+        return None
+
+    category = loc.get("category") or "other"
+    return {
+        "id": f"admin_{loc.get('id', loc.get('name', 'location'))}",
+        "name": loc.get("name") or "Location",
+        "category": _place_category_for_mobile(category),
+        "description": loc.get("description") or "",
+        "address": loc.get("address") or "Surigao City",
+        "latitude": lat_f,
+        "longitude": lon_f,
+        "emoji": _place_emoji(category),
+        "keywords": [loc.get("name") or ""],
+    }
+
+
+def _format_admin_place_response(locations: list[dict]) -> str:
+    if not locations:
+        return ""
+
+    if len(locations) == 1:
+        loc = locations[0]
+        lines = [f"📍 **{loc.get('name', 'Location')}**"]
+        if loc.get("address"):
+            lines.append(f"📫 **Address:** {loc['address']}")
+        if loc.get("contact"):
+            lines.append(f"📞 **Contact:** {loc['contact']}")
+        if loc.get("operating_hours"):
+            lines.append(f"🕐 **Hours:** {loc['operating_hours']}")
+        if loc.get("description"):
+            lines.append(f"\n{loc['description']}")
+        lines.append("\nUse **Route Me** below to open the in-app route.")
+        return "\n".join(lines)
+
+    lines = [f"I found **{len(locations)} admin-listed places** matching your query:\n"]
+    for i, loc in enumerate(locations, 1):
+        lines.append(f"**{i}. {loc.get('name', 'Location')}**")
+        if loc.get("address"):
+            lines.append(f"   📫 {loc['address']}")
+        if loc.get("operating_hours"):
+            lines.append(f"   🕐 {loc['operating_hours']}")
+        lines.append("")
+    lines.append("Use **Route Me** on the exact place below to open the in-app route.")
+    return "\n".join(lines)
+
+
+async def _search_admin_locations(message: str, max_results: int = 3) -> tuple[Optional[str], list[dict]]:
+    """Search Admin Dashboard locations before falling back to OpenStreetMap."""
+    if not settings.LOCATIONS_API_URL:
+        return None, []
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=8) as client:
+            res = await client.get(settings.LOCATIONS_API_URL)
+            res.raise_for_status()
+            rows = res.json().get("data", [])
+    except Exception as e:
+        logger.debug(f"[Locations] Admin location lookup failed: {e}")
+        return None, []
+
+    query = message.lower()
+    query_words = [
+        w for w in re.findall(r"\b[a-zA-Z0-9]+\b", query)
+        if w not in _LOCATION_STOP_WORDS and len(w) >= 2
+    ]
+    if not query_words:
+        return None, []
+
+    scored: list[tuple[float, dict]] = []
+    for loc in rows:
+        name = (loc.get("name") or "").lower()
+        address = (loc.get("address") or "").lower()
+        description = (loc.get("description") or "").lower()
+        category = (loc.get("category") or "").lower()
+        haystack = f"{name} {address} {description} {category}"
+
+        score = 0.0
+        if name and name in query:
+            score += 8.0
+        name_words = [w for w in re.findall(r"\b[a-zA-Z0-9]+\b", name) if len(w) >= 2]
+        matched_name_words = sum(1 for w in name_words if w in query_words)
+        if name_words:
+            score += 5.0 * (matched_name_words / len(name_words))
+        score += sum(0.7 for w in query_words if w in haystack)
+
+        if score >= 1.4:
+            scored.append((score, loc))
+
+    if not scored:
+        return None, []
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    chosen: list[dict] = []
+    mobile_places: list[dict] = []
+    for _, loc in scored:
+        place = _location_to_mobile_place(loc)
+        if place is None:
+            continue
+        chosen.append(loc)
+        mobile_places.append(place)
+        if len(mobile_places) >= max_results:
+            break
+    if not mobile_places:
+        return None, []
+
+    return _format_admin_place_response(chosen), mobile_places
 
 
 async def _run_pipeline(
@@ -248,16 +422,36 @@ async def _run_pipeline(
     faq_answer = None
     rag_context = None
     _places_searched = False  # tracks whether OSM was tried but returned no results
+    structured_places: list[dict] = []
     if topic != "docs" and not document and "pdid" not in entities:
         try:
-            from app.services.places_service import is_places_query, search_places, format_place_response, _detect_category
+            from app.services.places_service import is_places_query, search_places, format_place_response
             if is_places_query(message):
-                places = await search_places(message, max_results=3, user_lat=user_lat, user_lon=user_lon)
-                if places:
-                    faq_answer = format_place_response(places, message)
+                faq_answer, structured_places = await _search_admin_locations(message, max_results=3)
+                if not faq_answer:
+                    places = await search_places(message, max_results=3, user_lat=user_lat, user_lon=user_lon)
+                    if places:
+                        faq_answer = format_place_response(places, message)
+                        structured_places = [
+                            {
+                                "id": f"osm_{i}",
+                                "name": p.get("name") or "Location",
+                                "category": "tourist_spot",
+                                "description": p.get("full_address") or "",
+                                "address": p.get("address") or "Surigao City",
+                                "latitude": p.get("latitude"),
+                                "longitude": p.get("longitude"),
+                                "emoji": "📍",
+                                "keywords": [p.get("name") or ""],
+                            }
+                            for i, p in enumerate(places)
+                            if p.get("latitude") is not None and p.get("longitude") is not None
+                        ]
+                    else:
+                        # OSM returned nothing — mark it so the fallback response can be smarter.
+                        _places_searched = True
                 else:
-                    # OSM returned nothing — mark it so the fallback response can be smarter.
-                    _places_searched = True
+                    intent = "tourism_query"
         except Exception as _places_err:
             logger.debug(f"[Places] OSM lookup error (non-fatal): {_places_err}")
 
@@ -328,6 +522,7 @@ async def _run_pipeline(
         rag_context=rag_context,
         faq_answer=faq_answer,  # type: ignore
         places_searched=_places_searched,
+        places=structured_places,
     )
 
 
@@ -373,6 +568,7 @@ async def process_message(
             "intent": p.intent,
             "confidence": round(p.confidence, 4),
             "entities": p.entities,
+            "places": p.places,
         }
 
     # ── Hard guard: PDID provided but not found in DTS → skip LLM entirely ──
@@ -388,6 +584,7 @@ async def process_message(
             "intent": p.intent,
             "confidence": round(p.confidence, 4),
             "entities": p.entities,
+            "places": p.places,
         }
 
     # Generate response — try LLM first, fall back to templates
@@ -438,6 +635,7 @@ async def process_message(
         "intent": p.intent,
         "confidence": round(p.confidence, 4),
         "entities": p.entities,
+        "places": p.places,
     }
 
 
@@ -462,6 +660,7 @@ async def stream_message(
         "intent": p.intent,
         "confidence": round(p.confidence, 4),
         "entities": p.entities,
+        "places": p.places,
     }
     yield f"data: {json.dumps(metadata)}\n\n"
 
@@ -478,6 +677,7 @@ async def stream_message(
             "confidence": round(p.confidence, 4),
             "entities": p.entities,
             "language": language,
+            "places": p.places,
         })
         yield f"data: [DONE]{done_meta}\n\n"
         return
@@ -496,6 +696,7 @@ async def stream_message(
             "confidence": round(p.confidence, 4),
             "entities": p.entities,
             "language": language,
+            "places": p.places,
         })
         yield f"data: [DONE]{done_meta}\n\n"
         return
@@ -555,6 +756,7 @@ async def stream_message(
             "confidence": round(p.confidence, 4),
             "entities": p.entities,
             "language": language,
+            "places": p.places,
         })
         yield f"data: {json.dumps({'text': full_reply})}\n\ndata: [DONE]{done_meta}\n\n"
     else:
@@ -564,6 +766,7 @@ async def stream_message(
             "confidence": round(p.confidence, 4),
             "entities": p.entities,
             "language": language,
+            "places": p.places,
         })
         yield f"data: [DONE]{done_meta}\n\n"
 

@@ -1,7 +1,7 @@
 """Pydantic request/response schemas for the chat API."""
 
 from pydantic import BaseModel, Field
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Any
 
 
 class ChatRequest(BaseModel):
@@ -36,6 +36,7 @@ class ChatResponse(BaseModel):
     intent: str = Field(..., description="Classified intent of the user's message")
     confidence: float = Field(..., description="Confidence score of the classification")
     entities: Dict[str, str] = Field(default_factory=dict, description="Extracted entities (e.g., PDID)")
+    places: List[Dict[str, Any]] = Field(default_factory=list, description="Structured place results with coordinates for in-app routing")
     author: str = Field(default="DTS AI Engine by Clarence Buenaflor, Jester Pastor and Mharjade Enario", description="Engine author watermark")
     engine_version: str = Field(default="1.0.0", description="Engine version")
 

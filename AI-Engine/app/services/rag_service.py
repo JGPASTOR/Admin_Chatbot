@@ -661,6 +661,12 @@ def _ingest_locations_from_api(locations_api_url: str) -> int:
     return total_added
 
 
+def sync_locations_from_api(locations_api_url: str) -> int:
+    """Public wrapper used by the API route and startup lifecycle."""
+    total = _ingest_locations_from_api(locations_api_url)
+    return total
+
+
 # ── Index Build / Load ────────────────────────────────────────────────────────
 
 def _build_index_from_api(api_url: str) -> None:
@@ -755,6 +761,12 @@ def initialize_rag(api_url: str, store_dir: str, locations_api_url: str = "") ->
     except Exception as e:
         logger.warning(f"[RAG] Document index build failed (FAQ still works): {e}")
 
+    if locations_api_url:
+        try:
+            _ingest_locations_from_api(locations_api_url)
+        except Exception as e:
+            logger.warning(f"[RAG] Location sync failed during startup: {e}")
+
     logger.info("[RAG] Initialization complete.")
 
 
@@ -770,6 +782,7 @@ def rebuild_index() -> int:
         raise RuntimeError("[RAG] Store directory not set. Was initialize_rag called?")
 
     api_url = os.environ.get("RAG_DOCUMENT_API_URL", "http://localhost:3005/api/general-documents")
+    locations_api_url = os.environ.get("LOCATIONS_API_URL", "")
 
     logger.info(f"[RAG] Rebuilding index from {api_url} ...")
 
@@ -824,6 +837,11 @@ def rebuild_index() -> int:
 
     _rag_ready = True
     total = len(all_chunks)
+    if locations_api_url:
+        try:
+            total += _ingest_locations_from_api(locations_api_url)
+        except Exception as e:
+            logger.warning(f"[RAG] Location sync failed during rebuild: {e}")
     logger.info(f"[RAG] Rebuild complete. {total} total chunks indexed.")
     return total
 
